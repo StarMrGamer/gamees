@@ -13,6 +13,7 @@ struct NetAddress {
 bool net_address_parse(const char* str, uint16_t default_port, NetAddress* out);
 void net_address_to_string(NetAddress a, char* buf, int cap);
 bool net_address_equal(NetAddress a, NetAddress b);
+int net_local_addresses(NetAddress* out, int cap, uint16_t port);
 
 struct UdpSocket {
   uint64_t handle;

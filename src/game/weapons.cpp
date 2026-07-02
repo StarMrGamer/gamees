@@ -11,6 +11,54 @@ static Vec3 player_center(const Player& p) {
   return p.pos + Vec3{0.0f, h * 0.5f, 0.0f};
 }
 
+static Vec3 player_eye(const Player& p) {
+  float eye_h = p.crouching ? CROUCH_EYE_HEIGHT : EYE_HEIGHT;
+  return p.pos + Vec3{0.0f, eye_h, 0.0f};
+}
+
+static Vec3 weapon_muzzle(const Player& p, Vec3 view_dir) {
+  Vec3 right = angles_right(p.yaw);
+  return player_eye(p) + view_dir * WEAPON_MUZZLE_FORWARD +
+         right * WEAPON_MUZZLE_RIGHT + Vec3{0.0f, -WEAPON_MUZZLE_DOWN, 0.0f};
+}
+
+static Vec3 side_aim_dir(const GameState& s, const Map& map, int shooter,
+                         Vec3 eye, Vec3 view_dir, Vec3 muzzle, float range) {
+  float wall_t = ray_map(map, eye, view_dir, range);
+  float hit_t = range;
+  int hit = find_player_ray_hit(s, eye, view_dir, wall_t, shooter, &hit_t);
+  float target_t = hit >= 0 ? hit_t : wall_t;
+  Vec3 target = eye + view_dir * target_t;
+  Vec3 dir = vec3_normalize(target - muzzle);
+  return vec3_length(dir) > 0.0f ? dir : view_dir;
+}
+
+static Vec3 pellet_dir(Vec3 base, Vec3 right, int pellet) {
+  static const float offsets[SHOTGUN_PELLETS][2] = {
+    {0.0f, 0.0f},
+    {-1.0f, 0.0f},
+    {1.0f, 0.0f},
+    {0.0f, 1.0f},
+    {0.0f, -1.0f},
+    {-0.72f, 0.72f},
+    {0.72f, -0.72f},
+  };
+  Vec3 up{0.0f, 1.0f, 0.0f};
+  int i = pellet % SHOTGUN_PELLETS;
+  return vec3_normalize(base + right * (offsets[i][0] * SHOTGUN_SPREAD) +
+                        up * (offsets[i][1] * SHOTGUN_SPREAD));
+}
+
+static void fire_hitscan(GameState& s, const Map& map, int shooter, Vec3 origin, Vec3 shot_dir,
+                         float range, float damage, float knockback) {
+  float wall_t = ray_map(map, origin, shot_dir, range);
+  float hit_t = range;
+  int hit = find_player_ray_hit(s, origin, shot_dir, wall_t, shooter, &hit_t);
+  if (hit >= 0) {
+    damage_player(s, hit, shooter, damage, shot_dir * knockback);
+  }
+}
+
 int find_player_ray_hit(const GameState& s, Vec3 origin, Vec3 dir, float max_t,
                         int exclude, float* t_out) {
   int best = -1;
@@ -33,7 +81,7 @@ void damage_player(GameState& s, int victim, int attacker, float amount, Vec3 kn
   Player& v = s.players[victim];
   if (!v.active || !v.alive) return;
   v.vel += knockback;
-  v.health -= amount;
+  v.health -= amount * player_class_damage_taken_scale(v.player_class);
   if (attacker >= 0 && attacker < MAX_PLAYERS) {
     push_event(s, EV_HIT, static_cast<uint8_t>(attacker), static_cast<uint8_t>(victim), player_center(v));
   }
@@ -63,8 +111,11 @@ void weapon_fire(GameState& s, const Map& map, int shooter) {
   if (!p.active || !p.alive || p.fire_cooldown > 0.0f) return;
 
   Vec3 dir = vec3_normalize(angles_forward(p.yaw, p.pitch));
-  float eye_h = p.crouching ? CROUCH_EYE_HEIGHT : EYE_HEIGHT;
-  Vec3 origin = p.pos + Vec3{0.0f, eye_h, 0.0f};
+  Vec3 eye = player_eye(p);
+  Vec3 origin = weapon_muzzle(p, dir);
+  float aim_range = p.weapon == WEAPON_SHOTGUN ? SHOTGUN_RANGE :
+                    (p.weapon == WEAPON_LMG ? LMG_RANGE : RIFLE_RANGE);
+  Vec3 shot_dir = side_aim_dir(s, map, shooter, eye, dir, origin, aim_range);
 
   if (p.weapon == WEAPON_ROCKET) {
     for (int i = 0; i < MAX_ROCKETS; ++i) {
@@ -72,21 +123,31 @@ void weapon_fire(GameState& s, const Map& map, int shooter) {
       if (r.active) continue;
       r.active = true;
       r.owner = static_cast<uint8_t>(shooter);
-      r.pos = origin + dir * 0.65f;
-      r.vel = dir * ROCKET_SPEED;
+      r.pos = origin;
+      r.vel = shot_dir * ROCKET_SPEED;
       r.life = ROCKET_LIFETIME;
       p.fire_cooldown = ROCKET_INTERVAL;
       push_event(s, EV_SOUND, SND_ROCKET_LAUNCH, static_cast<uint8_t>(shooter), origin);
       return;
     }
+  } else if (p.weapon == WEAPON_SHOTGUN) {
+    p.fire_cooldown = SHOTGUN_INTERVAL;
+    Vec3 right = angles_right(p.yaw);
+    float pellet_damage = SHOTGUN_DAMAGE * player_class_damage_scale(p.player_class);
+    for (int pellet = 0; pellet < SHOTGUN_PELLETS; ++pellet) {
+      fire_hitscan(s, map, shooter, origin, pellet_dir(shot_dir, right, pellet),
+                   SHOTGUN_RANGE, pellet_damage, SHOTGUN_KNOCKBACK);
+    }
+    push_event(s, EV_SOUND, SND_RIFLE, static_cast<uint8_t>(shooter), origin);
+  } else if (p.weapon == WEAPON_LMG) {
+    p.fire_cooldown = LMG_INTERVAL;
+    fire_hitscan(s, map, shooter, origin, shot_dir, LMG_RANGE,
+                 LMG_DAMAGE * player_class_damage_scale(p.player_class), LMG_KNOCKBACK);
+    push_event(s, EV_SOUND, SND_RIFLE, static_cast<uint8_t>(shooter), origin);
   } else {
     p.fire_cooldown = RIFLE_INTERVAL;
-    float wall_t = ray_map(map, origin, dir, RIFLE_RANGE);
-    float hit_t = RIFLE_RANGE;
-    int hit = find_player_ray_hit(s, origin, dir, wall_t, shooter, &hit_t);
-    if (hit >= 0) {
-      damage_player(s, hit, shooter, RIFLE_DAMAGE, dir * RIFLE_KNOCKBACK);
-    }
+    fire_hitscan(s, map, shooter, origin, shot_dir, RIFLE_RANGE,
+                 RIFLE_DAMAGE * player_class_damage_scale(p.player_class), RIFLE_KNOCKBACK);
     push_event(s, EV_SOUND, SND_RIFLE, static_cast<uint8_t>(shooter), origin);
   }
 }
@@ -97,6 +158,10 @@ void explode_rocket(GameState& s, const Map&, int rocket_index) {
   if (!r.active) return;
   Vec3 pos = r.pos;
   int owner = r.owner;
+  float damage_scale = 1.0f;
+  if (owner >= 0 && owner < MAX_PLAYERS && s.players[owner].active) {
+    damage_scale = player_class_damage_scale(s.players[owner].player_class);
+  }
   r.active = false;
 
   push_event(s, EV_SOUND, SND_EXPLOSION, static_cast<uint8_t>(owner), pos);
@@ -109,8 +174,14 @@ void explode_rocket(GameState& s, const Map&, int rocket_index) {
     if (dist > ROCKET_SPLASH_RADIUS) continue;
     float frac = 1.0f - dist / ROCKET_SPLASH_RADIUS;
     Vec3 dir = dist > 0.001f ? delta / dist : Vec3{0.0f, 1.0f, 0.0f};
-    float damage = ROCKET_DIRECT_DAMAGE * frac;
+    float damage = ROCKET_DIRECT_DAMAGE * frac * damage_scale;
     Vec3 knockback = dir * (ROCKET_KNOCKBACK * frac);
+    if (i == owner) {
+      damage *= ROCKET_SELF_DAMAGE_SCALE;
+      knockback = dir * (ROCKET_JUMP_KNOCKBACK * frac);
+      float min_up = ROCKET_JUMP_MIN_UP * frac;
+      if (knockback.y < min_up) knockback.y = min_up;
+    }
     damage_player(s, i, owner, damage, knockback);
   }
 }
@@ -130,7 +201,7 @@ void rockets_tick(GameState& s, const Map& map, float dt) {
     Vec3 dir = dist > 0.0001f ? step / dist : Vec3{0, 0, -1};
     float wall_t = ray_map(map, r.pos, dir, dist);
     float player_t = dist;
-    int hit = find_player_ray_hit(s, r.pos, dir, wall_t, -1, &player_t);
+    int hit = find_player_ray_hit(s, r.pos, dir, wall_t, r.owner, &player_t);
     if (wall_t < dist || hit >= 0) {
       float t = hit >= 0 ? player_t : wall_t;
       r.pos += dir * t;

@@ -32,6 +32,52 @@ static void accelerate(Vec3& vel, Vec3 wish, float speed_cap, float accel_speed,
   vel.z += wish.z * amount;
 }
 
+static bool spend_stamina(Player& p) {
+  if (p.stamina <= 0) return false;
+  p.stamina -= 1;
+  if (p.stamina < MAX_STAMINA && p.stamina_recharge_timer <= 0.0f) {
+    p.stamina_recharge_timer = STAMINA_RECHARGE_TIME;
+  }
+  return true;
+}
+
+static void update_stamina(Player& p, float dt) {
+  if (p.stamina > MAX_STAMINA) p.stamina = MAX_STAMINA;
+  if (p.stamina < 0) p.stamina = 0;
+  if (!p.on_ground || p.stamina >= MAX_STAMINA) {
+    if (p.stamina >= MAX_STAMINA) p.stamina_recharge_timer = 0.0f;
+    return;
+  }
+
+  if (p.stamina_recharge_timer <= 0.0f) p.stamina_recharge_timer = STAMINA_RECHARGE_TIME;
+  p.stamina_recharge_timer -= dt;
+  while (p.stamina_recharge_timer <= 0.0f && p.stamina < MAX_STAMINA) {
+    p.stamina += 1;
+    if (p.stamina < MAX_STAMINA) {
+      p.stamina_recharge_timer += STAMINA_RECHARGE_TIME;
+    } else {
+      p.stamina_recharge_timer = 0.0f;
+    }
+  }
+}
+
+static Vec3 wall_probe_normal(const Map& map, Vec3 pos, bool crouching) {
+  constexpr float probe = 0.08f;
+  Vec3 p = pos;
+  p.x += probe;
+  if (map_box_overlap(map, player_aabb(p, crouching))) return {-1.0f, 0.0f, 0.0f};
+  p = pos;
+  p.x -= probe;
+  if (map_box_overlap(map, player_aabb(p, crouching))) return {1.0f, 0.0f, 0.0f};
+  p = pos;
+  p.z += probe;
+  if (map_box_overlap(map, player_aabb(p, crouching))) return {0.0f, 0.0f, -1.0f};
+  p = pos;
+  p.z -= probe;
+  if (map_box_overlap(map, player_aabb(p, crouching))) return {0.0f, 0.0f, 1.0f};
+  return {0.0f, 0.0f, 0.0f};
+}
+
 void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
   p.yaw = in.yaw;
   p.pitch = clampf(in.pitch, -1.5f, 1.5f);
@@ -39,6 +85,16 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
   if (p.dash_cooldown > 0.0f) p.dash_cooldown -= dt;
   if (p.slide_time > 0.0f) p.slide_time -= dt;
   if (p.jump_buffer > 0.0f) p.jump_buffer -= dt;
+  if (p.wall_contact_time > 0.0f) p.wall_contact_time -= dt;
+  if (p.wall_jump_cooldown > 0.0f) p.wall_jump_cooldown -= dt;
+  if (p.dash_air_control_time > 0.0f) p.dash_air_control_time -= dt;
+  if (p.wall_contact_time <= 0.0f) p.wall_normal = {0.0f, 0.0f, 0.0f};
+  update_stamina(p, dt);
+  float class_speed = player_class_speed_scale(p.player_class);
+  float ground_max_speed = GROUND_MAX_SPEED * class_speed;
+  float ground_accel = GROUND_ACCEL * class_speed;
+  float air_accel = AIR_ACCEL * class_speed;
+  float air_wish_cap = AIR_WISH_CAP * class_speed;
 
   bool want_crouch = (in.buttons & BTN_CROUCH) != 0;
   if (want_crouch) {
@@ -59,8 +115,12 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
   bool jump_down = (in.buttons & BTN_JUMP) != 0;
   if (jump_down && !p.jump_held) p.jump_buffer = JUMP_BUFFER_TIME;
   p.jump_held = jump_down;
+  bool dash_down = (in.buttons & BTN_DASH) != 0;
+  bool dash_pressed = dash_down && !p.dash_held;
+  p.dash_held = dash_down;
 
   bool queued_jump = p.on_ground && p.jump_buffer > 0.0f;
+  bool slide_jump = queued_jump && p.sliding;
   float speed = vec3_length(horizontal(p.vel));
   if (want_crouch && p.on_ground && speed > SLIDE_TRIGGER_SPEED && !p.sliding) {
     p.sliding = true;
@@ -82,20 +142,28 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
       }
       apply_friction(p.vel, friction, dt);
     }
-    accelerate(p.vel, wish, GROUND_MAX_SPEED, GROUND_MAX_SPEED, GROUND_ACCEL, dt);
+    accelerate(p.vel, wish, ground_max_speed, ground_max_speed, ground_accel, dt);
   } else {
-    accelerate(p.vel, wish, AIR_WISH_CAP, GROUND_MAX_SPEED, AIR_ACCEL, dt);
+    float air_mult = p.dash_air_control_time > 0.0f ? DASH_JUMP_AIR_CONTROL_MULT : 1.0f;
+    accelerate(p.vel, wish, air_wish_cap * air_mult, ground_max_speed, air_accel * air_mult, dt);
   }
 
-  if ((in.buttons & BTN_DASH) && p.dash_cooldown <= 0.0f) {
+  if (dash_pressed && p.dash_cooldown <= 0.0f && spend_stamina(p)) {
     Vec3 dir = vec3_length(wish) > 0.0f ? wish : fwd;
-    p.vel += dir * DASH_IMPULSE;
-    p.dash_cooldown = DASH_COOLDOWN;
+    p.vel += dir * (DASH_IMPULSE * player_class_dash_impulse_scale(p.player_class));
+    p.dash_cooldown = DASH_COOLDOWN * player_class_dash_cooldown_scale(p.player_class);
+    if (jump_down) p.dash_air_control_time = DASH_JUMP_AIR_CONTROL_TIME;
   }
 
   if (p.on_ground && p.jump_buffer > 0.0f) {
+    if (slide_jump) {
+      Vec3 dir = vec3_normalize(horizontal(p.vel));
+      if (vec3_length(dir) > 0.0f) p.vel += dir * SLIDE_JUMP_BOOST;
+    }
     p.vel.y = JUMP_VELOCITY;
     p.on_ground = false;
+    p.sliding = false;
+    p.air_jump_used = false;
     p.jump_buffer = 0.0f;
   }
 
@@ -109,4 +177,32 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
   p.pos = mr.pos;
   p.vel = mr.vel;
   p.on_ground = mr.on_ground;
+  if (p.on_ground) {
+    p.wall_contact_time = 0.0f;
+    p.wall_normal = {0.0f, 0.0f, 0.0f};
+    p.air_jump_used = false;
+  } else {
+    Vec3 wall = vec3_length(mr.wall_normal) > 0.0f ? mr.wall_normal : wall_probe_normal(map, p.pos, p.crouching);
+    if (vec3_length(wall) > 0.0f) {
+      p.wall_normal = wall;
+      p.wall_contact_time = WALL_CONTACT_GRACE;
+    }
+    if (p.jump_buffer > 0.0f && p.wall_contact_time > 0.0f && p.wall_jump_cooldown <= 0.0f) {
+      Vec3 normal = vec3_normalize(p.wall_normal);
+      Vec3 h = horizontal(p.vel);
+      float into_wall = vec3_dot(h, -normal);
+      if (into_wall > 0.0f) h += normal * into_wall;
+      p.vel = h + normal * WALL_JUMP_PUSH;
+      if (vec3_length(wish) > 0.0f) p.vel += wish * WALL_JUMP_WISH_BOOST;
+      p.vel.y = WALL_JUMP_UP_VELOCITY;
+      p.jump_buffer = 0.0f;
+      p.wall_jump_cooldown = WALL_JUMP_COOLDOWN;
+      p.wall_contact_time = 0.0f;
+      p.wall_normal = {0.0f, 0.0f, 0.0f};
+    } else if (p.jump_buffer > 0.0f && !p.air_jump_used && spend_stamina(p)) {
+      p.vel.y = DOUBLE_JUMP_VELOCITY;
+      p.air_jump_used = true;
+      p.jump_buffer = 0.0f;
+    }
+  }
 }

@@ -22,6 +22,7 @@ set(ARENA_SOURCES
   src/audio/synth.cpp
   src/client/bot.cpp
   src/client/client.cpp
+  src/client/config.cpp
   src/client/game_client.cpp
   src/client/menu.cpp
   src/core/log.cpp
@@ -52,6 +53,8 @@ add_executable(arena_tests
   tests/test_main.cpp
   tests/test_map.cpp
   tests/test_math.cpp
+  tests/test_audio.cpp
+  tests/test_config.cpp
   tests/test_movement.cpp
   tests/test_net.cpp
   tests/test_snapshot.cpp

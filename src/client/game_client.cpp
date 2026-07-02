@@ -3,6 +3,7 @@
 #include "audio/mixer.h"
 #include "audio/synth.h"
 #include "client/client.h"
+#include "client/config.h"
 #include "core/log.h"
 #include "game/map.h"
 #include "game/tuning.h"
@@ -24,8 +25,41 @@ struct KillFeedItem {
   float time_left;
 };
 
+constexpr float SOURCE_MOUSE_DEGREES_PER_COUNT = 0.022f;
+constexpr float MIN_SENSITIVITY = 0.1f;
+constexpr float MAX_SENSITIVITY = 20.0f;
+constexpr float SENSITIVITY_STEP = 0.1f;
+constexpr int SETTINGS_ITEM_COUNT = 4;
+
 static double app_seconds() {
   return static_cast<double>(SDL_GetTicks()) / 1000.0;
+}
+
+static float sanitize_sensitivity(float sensitivity) {
+  if (!std::isfinite(sensitivity)) return 3.0f;
+  return clampf(sensitivity, MIN_SENSITIVITY, MAX_SENSITIVITY);
+}
+
+static float mouse_radians_per_count(float sensitivity) {
+  return sensitivity * SOURCE_MOUSE_DEGREES_PER_COUNT * PI / 180.0f;
+}
+
+static uint8_t cycle_jump_bind(uint8_t bind, int dir) {
+  int v = static_cast<int>(bind);
+  v = (v + dir + 3) % 3;
+  return static_cast<uint8_t>(v);
+}
+
+static bool jump_input_active(const ClientSettings& settings, const bool* keys, float wheel_y) {
+  if (settings.jump_bind == JUMP_BIND_MWHEEL_UP) return wheel_y > 0.0f;
+  if (settings.jump_bind == JUMP_BIND_MWHEEL_DOWN) return wheel_y < 0.0f;
+  return keys[SDL_SCANCODE_SPACE];
+}
+
+static void set_mouse_capture(SDL_Window* window, bool capture) {
+  SDL_SetWindowRelativeMouseMode(window, capture);
+  SDL_SetWindowMouseGrab(window, capture);
+  SDL_SetWindowKeyboardGrab(window, capture);
 }
 
 static Vec3 player_color(int index) {
@@ -37,7 +71,20 @@ static Vec3 player_color(int index) {
 }
 
 static const char* weapon_name(uint8_t weapon) {
-  return weapon == WEAPON_ROCKET ? "ROCKET" : "RIFLE";
+  switch (weapon) {
+    case WEAPON_ROCKET: return "ROCKET";
+    case WEAPON_SHOTGUN: return "SHOTGUN";
+    case WEAPON_LMG: return "LMG";
+    default: return "RIFLE";
+  }
+}
+
+static Vec3 player_class_tint(uint8_t player_class) {
+  switch (player_class) {
+    case CLASS_SCOUT: return {0.72f, 1.10f, 1.18f};
+    case CLASS_TANK: return {1.18f, 0.90f, 0.72f};
+    default: return {1.0f, 1.0f, 1.0f};
+  }
 }
 
 static const char* player_label(const GameState& s, int index) {
@@ -93,6 +140,7 @@ static void draw_scoreboard(Hud& hud, int w, int h, const GameState& s, int loca
   hud_rect(hud, x, y, panel_w, panel_h, {0.03f, 0.035f, 0.04f}, 0.78f);
   hud_text_shadow(hud, x + 24.0f, y + 22.0f, 1.6f, {0.90f, 0.95f, 1.0f}, "SCOREBOARD");
   hud_text_shadow(hud, x + 24.0f, y + 56.0f, 1.0f, {0.62f, 0.72f, 0.82f}, "PLAYER");
+  hud_text_shadow(hud, x + 230.0f, y + 56.0f, 1.0f, {0.62f, 0.72f, 0.82f}, "CLASS");
   hud_text_shadow(hud, x + 360.0f, y + 56.0f, 1.0f, {0.62f, 0.72f, 0.82f}, "FRAGS");
   hud_text_shadow(hud, x + 448.0f, y + 56.0f, 1.0f, {0.62f, 0.72f, 0.82f}, "HP");
   for (int row = 0; row < count; ++row) {
@@ -102,9 +150,34 @@ static void draw_scoreboard(Hud& hud, int w, int h, const GameState& s, int loca
     Vec3 color = i == local_index ? Vec3{1.0f, 0.86f, 0.35f} : Vec3{0.88f, 0.92f, 0.96f};
     if (!p.alive) color = color * 0.65f;
     hud_text_shadow(hud, x + 24.0f, row_y, 1.15f, color, "%s", player_label(s, i));
+    hud_text_shadow(hud, x + 230.0f, row_y, 1.05f, color, "%s", player_class_name(p.player_class));
     hud_text_shadow(hud, x + 374.0f, row_y, 1.15f, color, "%d", p.frags);
     hud_text_shadow(hud, x + 452.0f, row_y, 1.15f, color, p.alive ? "%.0f" : "OUT", p.health);
   }
+}
+
+static void draw_settings_menu(Hud& hud, int w, int h, const ClientSettings& settings, int selected) {
+  float panel_w = 420.0f;
+  float panel_h = 246.0f;
+  float x = (static_cast<float>(w) - panel_w) * 0.5f;
+  float y = (static_cast<float>(h) - panel_h) * 0.5f;
+  hud_rect(hud, x, y, panel_w, panel_h, {0.03f, 0.035f, 0.04f}, 0.88f);
+  hud_text_shadow(hud, x + 28.0f, y + 24.0f, 1.55f, {0.90f, 0.95f, 1.0f}, "SETTINGS");
+
+  const char* resume_prefix = selected == 0 ? "> " : "  ";
+  const char* sens_prefix = selected == 1 ? "> " : "  ";
+  const char* jump_prefix = selected == 2 ? "> " : "  ";
+  const char* quit_prefix = selected == 3 ? "> " : "  ";
+  Vec3 active{1.0f, 0.86f, 0.35f};
+  Vec3 idle{0.86f, 0.90f, 0.94f};
+  hud_text_shadow(hud, x + 36.0f, y + 74.0f, 1.20f, selected == 0 ? active : idle,
+                  "%sRESUME", resume_prefix);
+  hud_text_shadow(hud, x + 36.0f, y + 112.0f, 1.20f, selected == 1 ? active : idle,
+                  "%sSENSITIVITY %.2f", sens_prefix, settings.sensitivity);
+  hud_text_shadow(hud, x + 36.0f, y + 150.0f, 1.20f, selected == 2 ? active : idle,
+                  "%sJUMP %s", jump_prefix, client_jump_bind_name(settings.jump_bind));
+  hud_text_shadow(hud, x + 36.0f, y + 188.0f, 1.20f, selected == 3 ? active : idle,
+                  "%sQUIT", quit_prefix);
 }
 
 static void add_kill_feed(KillFeedItem feed[4], const GameState& s, const GameEvent& e) {
@@ -148,9 +221,21 @@ static void handle_events(const ClientEvents& events, const GameState& view, int
 
 static void draw_status_hud(Hud& hud, int w, int h, const Client& client, const GameState& view,
                             const Map& map, const KillFeedItem feed[4], float hitmarker_timer,
-                            float fps) {
+                            float damage_timer, float fps) {
   Vec3 text{0.92f, 0.96f, 0.98f};
   Vec3 warn{1.0f, 0.55f, 0.35f};
+  if (damage_timer > 0.0f) {
+    float a = clampf(damage_timer / 0.45f, 0.0f, 1.0f) * 0.44f;
+    Vec3 red{1.0f, 0.06f, 0.02f};
+    float fw = static_cast<float>(w);
+    float fh = static_cast<float>(h);
+    float edge = (fw < fh ? fw : fh) * 0.10f;
+    hud_rect(hud, 0.0f, 0.0f, fw, edge, red, a);
+    hud_rect(hud, 0.0f, fh - edge, fw, edge, red, a);
+    hud_rect(hud, 0.0f, 0.0f, edge, fh, red, a * 0.72f);
+    hud_rect(hud, fw - edge, 0.0f, edge, fh, red, a * 0.72f);
+  }
+
   char fps_text[32];
   std::snprintf(fps_text, sizeof(fps_text), "FPS %.0f", fps);
   hud_text_shadow(hud, static_cast<float>(w) - hud_text_width(fps_text, 1.0f) - 18.0f,
@@ -178,12 +263,38 @@ static void draw_status_hud(Hud& hud, int w, int h, const Client& client, const 
       view.players[client.player_index].active) {
     const Player& p = view.players[client.player_index];
     Vec3 hp_color = p.health <= 30.0f ? Vec3{1.0f, 0.34f, 0.24f} : Vec3{0.82f, 1.0f, 0.72f};
-    hud_text_shadow(hud, 28.0f, static_cast<float>(h) - 82.0f, 1.45f, hp_color, "HP %.0f", p.health);
-    hud_text_shadow(hud, 28.0f, static_cast<float>(h) - 48.0f, 1.1f, text, "FRAGS %d / %d", p.frags, view.frag_limit);
+    hud_text_shadow(hud, 28.0f, static_cast<float>(h) - 112.0f, 1.45f, hp_color, "HP %.0f", p.health);
+    hud_text_shadow(hud, 28.0f, static_cast<float>(h) - 78.0f, 1.1f, text, "FRAGS %d / %d", p.frags, view.frag_limit);
+    float sx = 30.0f;
+    float sy = static_cast<float>(h) - 40.0f;
+    for (int i = 0; i < MAX_STAMINA; ++i) {
+      Vec3 color = i < p.stamina ? Vec3{0.42f, 0.84f, 1.0f} : Vec3{0.16f, 0.20f, 0.24f};
+      hud_rect(hud, sx + static_cast<float>(i) * 34.0f, sy, 25.0f, 8.0f, color, 0.92f);
+    }
+    float dash_ready = p.dash_cooldown <= 0.0f ? 1.0f : 1.0f - clampf(p.dash_cooldown / DASH_COOLDOWN, 0.0f, 1.0f);
+    hud_rect(hud, 30.0f, static_cast<float>(h) - 24.0f, 126.0f, 6.0f, {0.12f, 0.15f, 0.18f}, 0.86f);
+    hud_rect(hud, 30.0f, static_cast<float>(h) - 24.0f, 126.0f * dash_ready, 6.0f,
+             dash_ready >= 1.0f ? Vec3{0.95f, 0.78f, 0.28f} : Vec3{0.42f, 0.84f, 1.0f}, 0.92f);
+    hud_text_shadow(hud, 166.0f, static_cast<float>(h) - 31.0f, 0.82f,
+                    dash_ready >= 1.0f ? Vec3{0.95f, 0.78f, 0.28f} : Vec3{0.68f, 0.76f, 0.84f},
+                    dash_ready >= 1.0f ? "DASH" : "%.1f", p.dash_cooldown);
+
+    float speed = vec3_length({p.vel.x, 0.0f, p.vel.z});
+    char speed_text[48];
+    const char* state = p.sliding ? " SLIDE" : (!p.on_ground ? " AIR" : "");
+    std::snprintf(speed_text, sizeof(speed_text), "%.0f m/s%s", speed, state);
+    Vec3 speed_color = p.sliding ? Vec3{1.0f, 0.78f, 0.28f} : Vec3{0.78f, 0.92f, 1.0f};
+    hud_text_shadow(hud, (static_cast<float>(w) - hud_text_width(speed_text, 1.0f)) * 0.5f,
+                    static_cast<float>(h) - 58.0f, 1.0f, speed_color, "%s", speed_text);
+
     const char* weapon = weapon_name(p.weapon);
     float weapon_w = hud_text_width(weapon, 1.35f);
     hud_text_shadow(hud, static_cast<float>(w) - weapon_w - 30.0f,
                     static_cast<float>(h) - 54.0f, 1.35f, text, "%s", weapon);
+    const char* cls = player_class_name(p.player_class);
+    float cls_w = hud_text_width(cls, 1.0f);
+    hud_text_shadow(hud, static_cast<float>(w) - cls_w - 30.0f,
+                    static_cast<float>(h) - 82.0f, 1.0f, player_class_tint(p.player_class), "%s", cls);
     if (!p.alive) {
       hud_center_text(hud, w, h, static_cast<float>(h) * 0.62f, 1.4f, warn, "RESPAWNING");
     }
@@ -203,8 +314,22 @@ static void draw_status_hud(Hud& hud, int w, int h, const Client& client, const 
   }
 }
 
-static PlayerInput sample_input(uint8_t weapon_switch, float* yaw, float* pitch, float dt,
-                                float mouse_dx, float mouse_dy) {
+static void draw_player_health_marker(Renderer& renderer, const Camera& cam, const Player& p, float body_h) {
+  float full_w = 0.82f;
+  float fill_w = full_w * clampf(p.health / PLAYER_MAX_HEALTH, 0.0f, 1.0f);
+  Vec3 right = angles_right(cam.yaw);
+  Vec3 center = p.pos + Vec3{0.0f, body_h + 0.48f, 0.0f};
+  Vec3 color = p.health <= 30.0f ? Vec3{1.0f, 0.18f, 0.12f} : Vec3{0.20f, 1.0f, 0.38f};
+  renderer_draw_box(renderer, center, {full_w + 0.08f, 0.075f, 0.045f}, {0.025f, 0.028f, 0.032f}, cam.yaw);
+  if (fill_w > 0.01f) {
+    renderer_draw_box(renderer, center - right * ((full_w - fill_w) * 0.5f),
+                      {fill_w, 0.052f, 0.032f}, color, cam.yaw);
+  }
+}
+
+static PlayerInput sample_input(uint8_t weapon_switch, uint8_t class_switch, const ClientSettings& settings,
+                                float* yaw, float* pitch, float dt,
+                                float mouse_dx, float mouse_dy, float wheel_y) {
   const bool* keys = SDL_GetKeyboardState(nullptr);
   float fallback_x = 0.0f;
   float fallback_y = 0.0f;
@@ -218,7 +343,7 @@ static PlayerInput sample_input(uint8_t weapon_switch, float* yaw, float* pitch,
   if (keys[SDL_SCANCODE_S]) in.buttons |= BTN_BACK;
   if (keys[SDL_SCANCODE_A]) in.buttons |= BTN_LEFT;
   if (keys[SDL_SCANCODE_D]) in.buttons |= BTN_RIGHT;
-  if (keys[SDL_SCANCODE_SPACE]) in.buttons |= BTN_JUMP;
+  if (jump_input_active(settings, keys, wheel_y)) in.buttons |= BTN_JUMP;
   if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_C]) in.buttons |= BTN_CROUCH;
   if (keys[SDL_SCANCODE_LSHIFT]) in.buttons |= BTN_DASH;
   if (keys[SDL_SCANCODE_F] || (mouse_buttons & SDL_BUTTON_LMASK)) in.buttons |= BTN_FIRE;
@@ -226,10 +351,12 @@ static PlayerInput sample_input(uint8_t weapon_switch, float* yaw, float* pitch,
   if (keys[SDL_SCANCODE_RIGHT]) *yaw += 2.6f * dt;
   if (keys[SDL_SCANCODE_UP]) *pitch += 1.8f * dt;
   if (keys[SDL_SCANCODE_DOWN]) *pitch -= 1.8f * dt;
-  *yaw += mouse_dx * 0.0025f;
-  *pitch -= mouse_dy * 0.0025f;
+  float mouse_scale = mouse_radians_per_count(settings.sensitivity);
+  *yaw += mouse_dx * mouse_scale;
+  *pitch -= mouse_dy * mouse_scale;
   *pitch = clampf(*pitch, -1.35f, 1.35f);
   in.weapon_switch = weapon_switch;
+  in.class_switch = class_switch;
   in.yaw = *yaw;
   in.pitch = *pitch;
   return in;
@@ -258,10 +385,11 @@ static void draw_first_person_hud(Hud& hud, int w, int h, uint8_t weapon) {
 }
 
 int game_client_main(NetAddress server, const char* player_name, ServerThread* owned_server,
-                     const char* map_path) {
+                     const char* map_path, ClientSettings settings) {
   if (owned_server) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
+  settings.sensitivity = sanitize_sensitivity(settings.sensitivity);
 
   if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
     log_error("SDL init failed: %s", SDL_GetError());
@@ -275,7 +403,7 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
   SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
   SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
-  SDL_Window* window = SDL_CreateWindow("arena", 1280, 720, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+  SDL_Window* window = SDL_CreateWindow("arena", 1280, 720, SDL_WINDOW_OPENGL | SDL_WINDOW_FULLSCREEN);
   if (!window) {
     log_error("window creation failed: %s", SDL_GetError());
     SDL_Quit();
@@ -290,9 +418,14 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     if (owned_server) server_thread_stop(*owned_server);
     return 1;
   }
-  SDL_SetWindowRelativeMouseMode(window, true);
-  SDL_SetWindowMouseGrab(window, true);
-  SDL_SetWindowKeyboardGrab(window, true);
+  if (!SDL_SetWindowFullscreenMode(window, nullptr)) {
+    log_warn("failed to request borderless fullscreen mode: %s", SDL_GetError());
+  }
+  if (!SDL_SetWindowFullscreen(window, true)) {
+    log_warn("failed to enter fullscreen: %s", SDL_GetError());
+  }
+  SDL_SyncWindow(window);
+  set_mouse_capture(window, true);
   SDL_RaiseWindow(window);
 
   Map map{};
@@ -326,12 +459,20 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
   }
 
   bool running = true;
-  uint8_t pending_weapon = 0;
+  uint8_t selected_weapon = 1;
+  uint8_t selected_class = settings.player_class < PLAYER_CLASS_COUNT
+    ? static_cast<uint8_t>(settings.player_class + 1)
+    : 1;
+  bool settings_open = false;
+  int settings_selected = 0;
   float yaw = 0.0f;
   float pitch = 0.0f;
   bool aim_initialized = false;
   bool map_mismatch_logged = false;
   float hitmarker_timer = 0.0f;
+  float damage_timer = 0.0f;
+  float previous_local_health = -1.0f;
+  bool previous_local_alive = false;
   KillFeedItem kill_feed[4]{};
   Rng fx_rng{0x9e3779b97f4a7c15ull};
   double fps_accum = 0.0;
@@ -353,30 +494,102 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     SDL_Event ev;
     float mouse_dx = 0.0f;
     float mouse_dy = 0.0f;
+    float wheel_y = 0.0f;
     while (SDL_PollEvent(&ev)) {
       if (ev.type == SDL_EVENT_QUIT || ev.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) running = false;
       if (ev.type == SDL_EVENT_MOUSE_MOTION) {
         mouse_dx += ev.motion.xrel;
         mouse_dy += ev.motion.yrel;
       }
+      if (ev.type == SDL_EVENT_MOUSE_WHEEL) {
+        float y = ev.wheel.y;
+        if (ev.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) y = -y;
+        wheel_y += y;
+      }
       if (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-        SDL_SetWindowRelativeMouseMode(window, true);
+        if (!settings_open) set_mouse_capture(window, true);
       }
       if (ev.type == SDL_EVENT_KEY_DOWN && !ev.key.repeat) {
-        if (ev.key.key == SDLK_ESCAPE) running = false;
-        if (ev.key.key == SDLK_1) pending_weapon = 1;
-        if (ev.key.key == SDLK_2) pending_weapon = 2;
+        if (ev.key.key == SDLK_ESCAPE) {
+          settings_open = !settings_open;
+          set_mouse_capture(window, !settings_open);
+        } else if (settings_open) {
+          if (ev.key.key == SDLK_UP) settings_selected = (settings_selected + SETTINGS_ITEM_COUNT - 1) % SETTINGS_ITEM_COUNT;
+          if (ev.key.key == SDLK_DOWN) settings_selected = (settings_selected + 1) % SETTINGS_ITEM_COUNT;
+          if (settings_selected == 1 && ev.key.key == SDLK_LEFT) {
+            settings.sensitivity = sanitize_sensitivity(settings.sensitivity - SENSITIVITY_STEP);
+            client_config_save(settings);
+          }
+          if (settings_selected == 1 && ev.key.key == SDLK_RIGHT) {
+            settings.sensitivity = sanitize_sensitivity(settings.sensitivity + SENSITIVITY_STEP);
+            client_config_save(settings);
+          }
+          if (settings_selected == 2 && ev.key.key == SDLK_LEFT) {
+            settings.jump_bind = cycle_jump_bind(settings.jump_bind, -1);
+            client_config_save(settings);
+          }
+          if (settings_selected == 2 && ev.key.key == SDLK_RIGHT) {
+            settings.jump_bind = cycle_jump_bind(settings.jump_bind, 1);
+            client_config_save(settings);
+          }
+          if (ev.key.key == SDLK_RETURN || ev.key.key == SDLK_KP_ENTER) {
+            if (settings_selected == 0) {
+              settings_open = false;
+              set_mouse_capture(window, true);
+            } else if (settings_selected == 3) {
+              running = false;
+            }
+          }
+        } else {
+          if (ev.key.key == SDLK_1) selected_weapon = 1;
+          if (ev.key.key == SDLK_2) selected_weapon = 2;
+          if (ev.key.key == SDLK_3) {
+            selected_class = 1;
+            selected_weapon = 1;
+          }
+          if (ev.key.key == SDLK_4) {
+            selected_class = 2;
+            selected_weapon = 1;
+          }
+          if (ev.key.key == SDLK_5) {
+            selected_class = 3;
+            selected_weapon = 1;
+          }
+        }
       }
     }
 
     ClientEvents events{};
     client_receive(client, now, &events);
-    PlayerInput in = sample_input(pending_weapon, &yaw, &pitch, dt, mouse_dx, mouse_dy);
-    pending_weapon = 0;
+    PlayerInput in{};
+    if (settings_open) {
+      in.weapon_switch = selected_weapon;
+      in.class_switch = selected_class;
+      in.yaw = yaw;
+      in.pitch = pitch;
+    } else {
+      in = sample_input(selected_weapon, selected_class, settings, &yaw, &pitch, dt, mouse_dx, mouse_dy, wheel_y);
+    }
     client_send_input(client, in);
 
     GameState view{};
     client_view_state(client, now, &view);
+    if (client.player_index >= 0 && client.player_index < MAX_PLAYERS &&
+        view.players[client.player_index].active) {
+      const Player& local = view.players[client.player_index];
+      if (previous_local_health >= 0.0f && local.alive &&
+          local.health < previous_local_health - 0.25f) {
+        damage_timer = 0.35f;
+      }
+      if (previous_local_alive && !local.alive) {
+        damage_timer = 0.55f;
+      }
+      previous_local_health = local.health;
+      previous_local_alive = local.alive;
+    } else {
+      previous_local_health = -1.0f;
+      previous_local_alive = false;
+    }
     if (client.state == CLIENT_CONNECTED && client.map_name[0] &&
         std::strcmp(client.map_name, map.name) != 0 && !map_mismatch_logged) {
       log_warn("server map is '%s' but local renderer loaded '%s'", client.map_name, map.name);
@@ -407,6 +620,7 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     handle_events(events, view, client.player_index, mixer, particles, fx_rng, kill_feed, &hitmarker_timer);
     particles_update(particles, dt);
     if (hitmarker_timer > 0.0f) hitmarker_timer -= dt;
+    if (damage_timer > 0.0f) damage_timer -= dt;
     for (int i = 0; i < 4; ++i) {
       if (kill_feed[i].time_left > 0.0f) kill_feed[i].time_left -= dt;
     }
@@ -420,11 +634,13 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
       if (!p.active || !p.alive) continue;
       if (i == client.player_index) continue;
       float body_h = p.crouching ? PLAYER_CROUCH_HEIGHT : PLAYER_HEIGHT;
+      Vec3 body_color = player_color(i) * player_class_tint(p.player_class);
       renderer_draw_box(renderer, p.pos + Vec3{0.0f, body_h * 0.5f, 0.0f},
                         {PLAYER_HALF_W * 2.0f, body_h, PLAYER_HALF_W * 2.0f},
-                        player_color(i), p.yaw);
+                        body_color, p.yaw);
       renderer_draw_box(renderer, p.pos + Vec3{0.0f, body_h + 0.18f, 0.0f},
-                        {0.36f, 0.36f, 0.36f}, player_color(i) * 1.15f, p.yaw);
+                        {0.36f, 0.36f, 0.36f}, body_color * 1.15f, p.yaw);
+      draw_player_health_marker(renderer, cam, p, body_h);
     }
     for (int i = 0; i < MAX_ROCKETS; ++i) {
       const Rocket& r = view.rockets[i];
@@ -442,23 +658,32 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     }
     particles_render(particles, renderer, cam);
     uint8_t local_weapon = WEAPON_RIFLE;
+    uint8_t local_class = player_class_from_switch(selected_class);
     if (client.player_index >= 0 && client.player_index < MAX_PLAYERS &&
         view.players[client.player_index].active) {
       local_weapon = view.players[client.player_index].weapon;
+      local_class = view.players[client.player_index].player_class;
     }
+    if (selected_weapon == 1) local_weapon = player_class_primary_weapon(local_class);
+    if (selected_weapon == 2) local_weapon = WEAPON_ROCKET;
     renderer_end_frame(renderer);
 
     hud_begin(hud, w, h);
     draw_first_person_hud(hud, w, h, local_weapon);
-    draw_status_hud(hud, w, h, client, view, map, kill_feed, hitmarker_timer, shown_fps);
+    draw_status_hud(hud, w, h, client, view, map, kill_feed, hitmarker_timer, damage_timer, shown_fps);
     const bool* keys = SDL_GetKeyboardState(nullptr);
-    if (keys[SDL_SCANCODE_TAB]) draw_scoreboard(hud, w, h, view, client.player_index);
+    if (settings_open) {
+      draw_settings_menu(hud, w, h, settings, settings_selected);
+    } else if (keys[SDL_SCANCODE_TAB]) {
+      draw_scoreboard(hud, w, h, view, client.player_index);
+    }
     hud_end(hud);
     SDL_GL_SwapWindow(window);
     SDL_Delay(1);
   }
 
   client_disconnect(client);
+  client_config_save(settings);
   audio_shutdown(mixer);
   SDL_GL_DestroyContext(gl);
   SDL_DestroyWindow(window);

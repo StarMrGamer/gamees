@@ -14,14 +14,20 @@ static Map movement_map() {
   return map;
 }
 
-TEST(player_accelerates_jumps_and_dashes) {
-  Map map = movement_map();
+static Player movement_player(Vec3 pos, bool on_ground) {
   Player p{};
   p.active = true;
   p.alive = true;
   p.health = PLAYER_MAX_HEALTH;
-  p.pos = {0, 0, 0};
-  p.on_ground = true;
+  p.stamina = MAX_STAMINA;
+  p.pos = pos;
+  p.on_ground = on_ground;
+  return p;
+}
+
+TEST(player_accelerates_jumps_and_dashes) {
+  Map map = movement_map();
+  Player p = movement_player({0, 0, 0}, true);
   PlayerInput in{};
   in.buttons = BTN_FORWARD;
   in.yaw = 0.0f;
@@ -37,18 +43,14 @@ TEST(player_accelerates_jumps_and_dashes) {
   player_move(p, in, map, TICK_DT);
   float after = vec3_length({p.vel.x, 0, p.vel.z});
   CHECK(after > before + 5.0f);
-  CHECK(p.dash_cooldown > 1.0f);
+  CHECK(p.dash_cooldown > 0.1f);
+  CHECK_EQ_INT(p.stamina, MAX_STAMINA - 1);
 }
 
 TEST(jump_frame_preserves_bhop_momentum) {
   Map map = movement_map();
-  Player p{};
-  p.active = true;
-  p.alive = true;
-  p.health = PLAYER_MAX_HEALTH;
-  p.pos = {0, 0, 0};
+  Player p = movement_player({0, 0, 0}, true);
   p.vel = {12.0f, 0.0f, 0.0f};
-  p.on_ground = true;
 
   PlayerInput in{};
   in.buttons = BTN_JUMP;
@@ -63,13 +65,8 @@ TEST(jump_frame_preserves_bhop_momentum) {
 
 TEST(air_strafe_uses_quake_style_wish_cap) {
   Map map = movement_map();
-  Player p{};
-  p.active = true;
-  p.alive = true;
-  p.health = PLAYER_MAX_HEALTH;
-  p.pos = {0, 2, 0};
+  Player p = movement_player({0, 2, 0}, false);
   p.vel = {0.0f, 0.0f, -8.0f};
-  p.on_ground = false;
 
   PlayerInput in{};
   in.buttons = BTN_RIGHT;
@@ -80,17 +77,141 @@ TEST(air_strafe_uses_quake_style_wish_cap) {
   CHECK(vec3_length({p.vel.x, 0.0f, p.vel.z}) > 8.05f);
 }
 
+TEST(dash_jump_temporarily_improves_air_control) {
+  Map map = movement_map();
+  Player p = movement_player({0, 0, 0}, true);
+
+  PlayerInput in{};
+  in.buttons = BTN_DASH | BTN_JUMP | BTN_FORWARD;
+  in.yaw = 0.0f;
+  player_move(p, in, map, TICK_DT);
+  CHECK(!p.on_ground);
+  CHECK(p.dash_air_control_time > 0.20f);
+
+  Player normal = movement_player({0, 2, 0}, false);
+  normal.vel = {0.0f, 0.0f, -8.0f};
+  Player boosted = normal;
+  boosted.dash_air_control_time = DASH_JUMP_AIR_CONTROL_TIME;
+
+  in.buttons = BTN_RIGHT;
+  player_move(normal, in, map, TICK_DT);
+  player_move(boosted, in, map, TICK_DT);
+  CHECK(boosted.vel.x > normal.vel.x + 0.2f);
+}
+
+TEST(slide_jump_adds_momentum) {
+  Map map = movement_map();
+  Player p = movement_player({0, 0, 0}, true);
+  p.vel = {0.0f, 0.0f, -10.0f};
+  p.sliding = true;
+  p.slide_time = SLIDE_DURATION;
+
+  PlayerInput in{};
+  in.buttons = BTN_JUMP | BTN_CROUCH;
+  in.yaw = 0.0f;
+  float before = vec3_length({p.vel.x, 0.0f, p.vel.z});
+  player_move(p, in, map, TICK_DT);
+  float after = vec3_length({p.vel.x, 0.0f, p.vel.z});
+  CHECK(!p.on_ground);
+  CHECK(after > before + SLIDE_JUMP_BOOST * 0.9f);
+}
+
+TEST(airborne_wall_jump_pushes_up_and_away) {
+  Map map = movement_map();
+  map.boxes[map.box_count++] = {{1.0f, 0.0f, -2.0f}, {1.8f, 5.0f, 2.0f}, {1, 1, 1}};
+  Player p = movement_player({0.5f, 1.0f, 0.0f}, false);
+  p.vel = {8.0f, 0.0f, 0.0f};
+
+  PlayerInput in{};
+  in.buttons = BTN_JUMP;
+  in.yaw = 0.0f;
+  player_move(p, in, map, TICK_DT);
+  CHECK(p.vel.x < -WALL_JUMP_PUSH * 0.75f);
+  CHECK(p.vel.y > WALL_JUMP_UP_VELOCITY * 0.9f);
+}
+
+TEST(stamina_gates_dash_and_recharges_on_ground) {
+  Map map = movement_map();
+  Player p = movement_player({0, 0, 0}, true);
+  PlayerInput in{};
+  in.buttons = BTN_DASH | BTN_FORWARD;
+  in.yaw = 0.0f;
+  player_move(p, in, map, TICK_DT);
+  CHECK_EQ_INT(p.stamina, MAX_STAMINA - 1);
+
+  player_move(p, in, map, TICK_DT);
+  CHECK_EQ_INT(p.stamina, MAX_STAMINA - 1);
+
+  in.buttons = 0;
+  for (int i = 0; i < TICK_RATE; ++i) player_move(p, in, map, TICK_DT);
+  in.buttons = BTN_DASH | BTN_FORWARD;
+  player_move(p, in, map, TICK_DT);
+  CHECK_EQ_INT(p.stamina, MAX_STAMINA - 2);
+
+  p.stamina_recharge_timer = TICK_DT * 0.5f;
+  in.buttons = 0;
+  player_move(p, in, map, TICK_DT);
+  CHECK_EQ_INT(p.stamina, MAX_STAMINA - 1);
+}
+
+TEST(player_classes_change_movement_profile) {
+  Map map = movement_map();
+  Player scout = movement_player({0, 0, 0}, true);
+  Player tank = movement_player({0, 0, 0}, true);
+  scout.player_class = CLASS_SCOUT;
+  tank.player_class = CLASS_TANK;
+
+  PlayerInput in{};
+  in.buttons = BTN_FORWARD;
+  in.yaw = 0.0f;
+  for (int i = 0; i < TICK_RATE; ++i) {
+    player_move(scout, in, map, TICK_DT);
+    player_move(tank, in, map, TICK_DT);
+  }
+
+  float scout_speed = vec3_length({scout.vel.x, 0.0f, scout.vel.z});
+  float tank_speed = vec3_length({tank.vel.x, 0.0f, tank.vel.z});
+  CHECK(scout_speed > tank_speed + 1.0f);
+
+  in.buttons = BTN_DASH | BTN_FORWARD;
+  float scout_before = scout_speed;
+  float tank_before = tank_speed;
+  player_move(scout, in, map, TICK_DT);
+  player_move(tank, in, map, TICK_DT);
+  float scout_dash_gain = vec3_length({scout.vel.x, 0.0f, scout.vel.z}) - scout_before;
+  float tank_dash_gain = vec3_length({tank.vel.x, 0.0f, tank.vel.z}) - tank_before;
+  CHECK(scout_dash_gain > tank_dash_gain);
+  CHECK(scout.dash_cooldown < tank.dash_cooldown);
+}
+
+TEST(double_jump_spends_stamina_once_per_airtime) {
+  Map map = movement_map();
+  Player p = movement_player({0, 2, 0}, false);
+  p.vel = {0.0f, -2.0f, 0.0f};
+
+  PlayerInput in{};
+  in.buttons = BTN_JUMP;
+  in.yaw = 0.0f;
+  player_move(p, in, map, TICK_DT);
+  CHECK(p.vel.y > DOUBLE_JUMP_VELOCITY * 0.9f);
+  CHECK_EQ_INT(p.stamina, MAX_STAMINA - 1);
+  CHECK(p.air_jump_used);
+
+  in.buttons = 0;
+  player_move(p, in, map, TICK_DT);
+  in.buttons = BTN_JUMP;
+  float before_y = p.vel.y;
+  player_move(p, in, map, TICK_DT);
+  CHECK(p.vel.y < before_y + 0.1f);
+  CHECK_EQ_INT(p.stamina, MAX_STAMINA - 1);
+}
+
 TEST(arena_spawns_face_movable_space) {
   Map map{};
   CHECK(map_load("maps/arena.txt", &map));
   for (int i = 0; i < map.spawn_count; ++i) {
     CHECK(!map_box_overlap(map, player_aabb(map.spawns[i], false)));
-    Player p{};
-    p.active = true;
-    p.alive = true;
-    p.health = PLAYER_MAX_HEALTH;
-    p.pos = map.spawns[i];
-    p.on_ground = true;
+    Player p = movement_player(map.spawns[i], true);
     PlayerInput in{};
     in.buttons = BTN_FORWARD;
     in.yaw = map.spawn_yaws[i];

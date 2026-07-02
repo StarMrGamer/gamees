@@ -5,7 +5,7 @@
 #include <cstdint>
 
 constexpr uint32_t PROTOCOL_MAGIC = 0x414E5241u;
-constexpr uint8_t PROTOCOL_VERSION = 1;
+constexpr uint8_t PROTOCOL_VERSION = 3;
 constexpr int MAX_PACKET = 2048;
 constexpr uint16_t DEFAULT_PORT = 27950;
 

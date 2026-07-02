@@ -99,6 +99,7 @@ static void handle_input(Server& sv, int slot_index, NetReader& r) {
     in.sequence = nr_u32(r);
     in.buttons = nr_u8(r);
     in.weapon_switch = nr_u8(r);
+    in.class_switch = nr_u8(r);
     in.yaw = nr_f32(r);
     in.pitch = nr_f32(r);
     if (in.sequence > best_seq) {

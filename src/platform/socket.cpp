@@ -14,6 +14,7 @@ using SocketHandle = SOCKET;
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -81,6 +82,48 @@ void net_address_to_string(NetAddress a, char* buf, int cap) {
 
 bool net_address_equal(NetAddress a, NetAddress b) {
   return a.ip == b.ip && a.port == b.port;
+}
+
+int net_local_addresses(NetAddress* out, int cap, uint16_t port) {
+  if (!out || cap <= 0) return 0;
+  if (!net_init()) return 0;
+
+  char host[256]{};
+  if (gethostname(host, sizeof(host) - 1) != 0) {
+    net_shutdown();
+    return 0;
+  }
+
+  addrinfo hints{};
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_DGRAM;
+  addrinfo* result = nullptr;
+  if (getaddrinfo(host, nullptr, &hints, &result) != 0) {
+    net_shutdown();
+    return 0;
+  }
+
+  int count = 0;
+  for (addrinfo* it = result; it && count < cap; it = it->ai_next) {
+    if (!it->ai_addr || static_cast<size_t>(it->ai_addrlen) < sizeof(sockaddr_in)) continue;
+    const sockaddr_in* addr = reinterpret_cast<const sockaddr_in*>(it->ai_addr);
+    uint32_t ip = ntohl(addr->sin_addr.s_addr);
+    if (ip == 0 || (ip >> 24) == 127) continue;
+
+    bool duplicate = false;
+    for (int i = 0; i < count; ++i) {
+      if (out[i].ip == ip) {
+        duplicate = true;
+        break;
+      }
+    }
+    if (duplicate) continue;
+
+    out[count++] = {ip, port};
+  }
+  freeaddrinfo(result);
+  net_shutdown();
+  return count;
 }
 
 UdpSocket udp_open(uint16_t bind_port) {

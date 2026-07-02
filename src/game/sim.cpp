@@ -62,6 +62,17 @@ void game_init(GameState& s, const Map& map, int frag_limit) {
   }
 }
 
+void game_set_player_class(Player& p, uint8_t player_class) {
+  if (player_class >= PLAYER_CLASS_COUNT) player_class = CLASS_RANGER;
+  float old_max = player_class_max_health(p.player_class);
+  float new_max = player_class_max_health(player_class);
+  float health_frac = old_max > 0.0f ? clampf(p.health / old_max, 0.0f, 1.0f) : 1.0f;
+  p.player_class = player_class;
+  p.health = new_max * health_frac;
+  if (!p.alive) p.health = 0.0f;
+  p.weapon = player_class_primary_weapon(p.player_class);
+}
+
 int game_player_join(GameState& s, const Map& map, const char* name) {
   Rng rng{0x1234abcdull + s.tick + s.next_event_id};
   for (int i = 0; i < MAX_PLAYERS; ++i) {
@@ -71,10 +82,12 @@ int game_player_join(GameState& s, const Map& map, const char* name) {
     p.active = true;
     p.alive = true;
     std::snprintf(p.name, sizeof(p.name), "%s", (name && name[0]) ? name : "player");
+    p.player_class = CLASS_RANGER;
     p.pos = pick_spawn(s, map, rng, &p.yaw);
     p.pitch = 0.0f;
-    p.health = PLAYER_MAX_HEALTH;
-    p.weapon = WEAPON_RIFLE;
+    p.health = player_class_max_health(p.player_class);
+    p.weapon = player_class_primary_weapon(p.player_class);
+    p.stamina = MAX_STAMINA;
     p.on_ground = false;
     push_event(s, EV_JOIN, static_cast<uint8_t>(i), 0, p.pos);
     return i;
@@ -93,15 +106,27 @@ void game_player_leave(GameState& s, int player_index) {
 static void respawn_player(GameState& s, const Map& map, int i, Rng& rng) {
   Player& p = s.players[i];
   p.alive = true;
-  p.health = PLAYER_MAX_HEALTH;
+  p.health = player_class_max_health(p.player_class);
   p.vel = {0, 0, 0};
   p.pos = pick_spawn(s, map, rng, &p.yaw);
   p.pitch = 0.0f;
   p.on_ground = false;
   p.crouching = false;
   p.sliding = false;
-  p.weapon = WEAPON_RIFLE;
+  p.weapon = player_class_primary_weapon(p.player_class);
   p.fire_cooldown = 0.0f;
+  p.dash_cooldown = 0.0f;
+  p.slide_time = 0.0f;
+  p.jump_buffer = 0.0f;
+  p.stamina = MAX_STAMINA;
+  p.stamina_recharge_timer = 0.0f;
+  p.wall_normal = {0, 0, 0};
+  p.wall_contact_time = 0.0f;
+  p.wall_jump_cooldown = 0.0f;
+  p.dash_air_control_time = 0.0f;
+  p.jump_held = false;
+  p.dash_held = false;
+  p.air_jump_used = false;
   push_event(s, EV_SOUND, SND_RESPAWN, static_cast<uint8_t>(i), p.pos);
 }
 
@@ -145,7 +170,11 @@ void game_tick(GameState& s, const Map& map, const PlayerInput inputs[MAX_PLAYER
     }
 
     PlayerInput in = inputs[i];
-    if (in.weapon_switch == 1) p.weapon = WEAPON_RIFLE;
+    if (in.class_switch >= 1 && in.class_switch <= PLAYER_CLASS_COUNT) {
+      uint8_t requested_class = player_class_from_switch(in.class_switch);
+      if (p.player_class != requested_class) game_set_player_class(p, requested_class);
+    }
+    if (in.weapon_switch == 1) p.weapon = player_class_primary_weapon(p.player_class);
     if (in.weapon_switch == 2) p.weapon = WEAPON_ROCKET;
     if (in.sequence >= p.last_input_seq) p.last_input_seq = in.sequence;
 
@@ -164,9 +193,10 @@ void game_tick(GameState& s, const Map& map, const PlayerInput inputs[MAX_PLAYER
 
     for (int k = 0; k < s.pickup_count; ++k) {
       Pickup& pk = s.pickups[k];
-      if (!pk.present || p.health >= PLAYER_MAX_HEALTH) continue;
+      float max_health = player_class_max_health(p.player_class);
+      if (!pk.present || p.health >= max_health) continue;
       if (vec3_length(pk.pos - p.pos) < 1.0f) {
-        p.health = clampf(p.health + HEALTH_PACK_AMOUNT, 0.0f, PLAYER_MAX_HEALTH);
+        p.health = clampf(p.health + HEALTH_PACK_AMOUNT, 0.0f, max_health);
         pk.present = false;
         pk.respawn_timer = HEALTH_RESPAWN_TIME;
         push_event(s, EV_SOUND, SND_PICKUP, static_cast<uint8_t>(i), pk.pos);

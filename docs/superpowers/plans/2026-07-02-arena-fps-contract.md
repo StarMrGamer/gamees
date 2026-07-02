@@ -73,6 +73,7 @@ src/
   game/sim.h  sim.cpp      — game_init/game_tick/join/leave/events
   game/snapshot.h  snapshot.cpp   — GameState <-> packet serialization + interpolation
   client/client.h  client.cpp     — connection state machine, snapshot buffer
+  client/config.h  config.cpp     — persistent client sensitivity/jump config
   client/game_client.h  game_client.cpp — playable app loop (window, input, render, audio glue)
   client/menu.h  menu.cpp
   client/bot.cpp  bot.h    — headless scripted client
@@ -153,7 +154,7 @@ int  udp_recv(UdpSocket& s, void* buf, int cap, NetAddress* from); // bytes, or 
 
 ```c
 constexpr uint32_t PROTOCOL_MAGIC   = 0x414E5241u; // "ARNA" little-endian
-constexpr uint8_t  PROTOCOL_VERSION = 1;
+constexpr uint8_t  PROTOCOL_VERSION = 3;
 constexpr int      MAX_PACKET       = 2048;
 constexpr uint16_t DEFAULT_PORT     = 27950;
 
@@ -185,7 +186,7 @@ bool packet_header_read(NetReader& r, PacketType* type_out);      // false if ba
 Packet layouts (after the 6-byte header):
 - `PKT_CL_HELLO`: `string name` (max 15 chars)
 - `PKT_CL_INPUT`: `u8 count (1..3)`, then `count` × InputCmd, **newest first**:
-  `u32 sequence, u8 buttons, u8 weapon_switch, f32 yaw, f32 pitch`
+  `u32 sequence, u8 buttons, u8 weapon_switch, u8 class_switch, f32 yaw, f32 pitch`
 - `PKT_CL_DISCONNECT`: (empty)
 - `PKT_SV_ACCEPT`: `u8 player_index, u8 tick_rate, string map_name`
 - `PKT_SV_REJECT`: `string reason`
@@ -210,7 +211,12 @@ constexpr float EYE_HEIGHT = 1.62f, CROUCH_EYE_HEIGHT = 1.0f;
 constexpr float PLAYER_MAX_HEALTH = 100.0f;
 constexpr float RIFLE_DAMAGE = 9.0f, RIFLE_INTERVAL = 0.12f, RIFLE_KNOCKBACK = 0.5f;
 constexpr float RIFLE_RANGE = 200.0f;
-constexpr float ROCKET_SPEED = 25.0f, ROCKET_DIRECT_DAMAGE = 100.0f;
+constexpr int   SHOTGUN_PELLETS = 7;
+constexpr float SHOTGUN_DAMAGE = 8.0f, SHOTGUN_INTERVAL = 0.65f;
+constexpr float SHOTGUN_KNOCKBACK = 0.35f, SHOTGUN_RANGE = 45.0f, SHOTGUN_SPREAD = 0.085f;
+constexpr float LMG_DAMAGE = 2.5f, LMG_INTERVAL = 0.055f, LMG_KNOCKBACK = 0.12f;
+constexpr float LMG_RANGE = 160.0f;
+constexpr float ROCKET_SPEED = 25.0f, ROCKET_DIRECT_DAMAGE = 80.0f;
 constexpr float ROCKET_SPLASH_RADIUS = 3.5f, ROCKET_INTERVAL = 0.8f;
 constexpr float ROCKET_KNOCKBACK = 14.0f, ROCKET_LIFETIME = 10.0f;
 constexpr float HEALTH_PACK_AMOUNT = 25.0f, HEALTH_RESPAWN_TIME = 15.0f;
@@ -227,15 +233,17 @@ enum Buttons : uint8_t {
   BTN_FORWARD = 1, BTN_BACK = 2, BTN_LEFT = 4, BTN_RIGHT = 8,
   BTN_JUMP = 16, BTN_CROUCH = 32, BTN_FIRE = 64, BTN_DASH = 128,
 };
-enum Weapon : uint8_t { WEAPON_RIFLE = 0, WEAPON_ROCKET = 1 };
+enum Weapon : uint8_t { WEAPON_RIFLE = 0, WEAPON_ROCKET = 1, WEAPON_SHOTGUN = 2, WEAPON_LMG = 3 };
+enum PlayerClass : uint8_t { CLASS_RANGER = 0, CLASS_SCOUT = 1, CLASS_TANK = 2, PLAYER_CLASS_COUNT = 3 };
 enum EventType : uint8_t { EV_KILL = 1, EV_SOUND, EV_JOIN, EV_LEAVE, EV_HIT };
 enum SoundId : uint8_t {  // shared by events and audio module
   SND_RIFLE = 1, SND_ROCKET_LAUNCH, SND_EXPLOSION, SND_JUMP, SND_DASH,
   SND_SLIDE, SND_PICKUP, SND_HURT, SND_DEATH, SND_RESPAWN, SND_COUNT,
 };
 
-struct PlayerInput { uint32_t sequence; uint8_t buttons; uint8_t weapon_switch; float yaw, pitch; };
-// weapon_switch: 0 = none, 1 = rifle, 2 = rocket
+struct PlayerInput { uint32_t sequence; uint8_t buttons; uint8_t weapon_switch; uint8_t class_switch; float yaw, pitch; };
+// weapon_switch: 0 = none, 1 = class primary (Ranger rifle, Scout shotgun, Tank LMG), 2 = rocket
+// class_switch: 0 = none, 1 = ranger, 2 = scout, 3 = tank
 
 struct Player {
   bool active; bool alive;
@@ -243,7 +251,7 @@ struct Player {
   Vec3 pos, vel;                 // pos = bottom-center of hull
   float yaw, pitch;
   float health;
-  uint8_t weapon;
+  uint8_t weapon, player_class;
   bool on_ground, crouching, sliding;
   float fire_cooldown, dash_cooldown, slide_time, respawn_timer, jump_buffer;
   bool jump_held;                // edge detection for jump
@@ -488,8 +496,16 @@ void server_thread_stop(ServerThread& st);
 int bot_main(NetAddress server, const char* name, int lifetime_seconds); // 0 = forever
 
 // client/game_client.h
-int game_client_main(NetAddress server, const char* player_name, ServerThread* owned_server);
+enum JumpBind : uint8_t { JUMP_BIND_SPACE = 0, JUMP_BIND_MWHEEL_UP = 1, JUMP_BIND_MWHEEL_DOWN = 2 };
+struct ClientSettings { float sensitivity; uint8_t player_class; uint8_t jump_bind; };
+int game_client_main(NetAddress server, const char* player_name, ServerThread* owned_server,
+                     const char* map_path, ClientSettings settings);
 // owned_server non-null when hosting: stopped on exit
+
+// client/config.h
+const char* client_config_path();              // ARENA_CONFIG or arena.cfg
+bool client_config_load(ClientSettings& settings);
+bool client_config_save(const ClientSettings& settings);
 
 // client/menu.h
 enum MenuResult { MENU_HOST, MENU_JOIN, MENU_QUIT };

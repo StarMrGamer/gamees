@@ -10,6 +10,8 @@ static uint8_t player_flags(const Player& p) {
   if (p.on_ground) flags |= 2;
   if (p.crouching) flags |= 4;
   if (p.sliding) flags |= 8;
+  int stamina = p.stamina < 0 ? 0 : (p.stamina > MAX_STAMINA ? MAX_STAMINA : p.stamina);
+  flags |= static_cast<uint8_t>(stamina << 4);
   return flags;
 }
 
@@ -34,6 +36,7 @@ void snapshot_write(const GameState& s, NetWriter& w) {
     nw_f32(w, p.pitch);
     nw_f32(w, p.health);
     nw_u8(w, p.weapon);
+    nw_u8(w, p.player_class);
     nw_f32(w, p.fire_cooldown);
     nw_f32(w, p.dash_cooldown);
     nw_f32(w, p.respawn_timer);
@@ -105,6 +108,7 @@ bool snapshot_read(GameState& s, NetReader& r) {
     p.on_ground = (flags & 2) != 0;
     p.crouching = (flags & 4) != 0;
     p.sliding = (flags & 8) != 0;
+    p.stamina = (flags >> 4) & 0x0f;
     nr_string(r, p.name, sizeof(p.name));
     p.pos = nr_vec3(r);
     p.vel = nr_vec3(r);
@@ -112,6 +116,7 @@ bool snapshot_read(GameState& s, NetReader& r) {
     p.pitch = nr_f32(r);
     p.health = nr_f32(r);
     p.weapon = nr_u8(r);
+    p.player_class = nr_u8(r);
     p.fire_cooldown = nr_f32(r);
     p.dash_cooldown = nr_f32(r);
     p.respawn_timer = nr_f32(r);

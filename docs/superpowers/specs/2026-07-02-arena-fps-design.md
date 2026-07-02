@@ -49,7 +49,7 @@ cross-verification).
 
 Single binary, three run modes:
 
-- **(no args)** — minimal keyboard menu: Host / Join localhost / Quit.
+- **(no args)** — minimal keyboard menu: Host / Join by IP / Quit.
 - **`--connect <ip[:port]>`** — join a server.
 - **`--host [--port N]`** — server on a background thread + local client connected
   over loopback UDP (identical code path to remote play; no special local-player logic).
@@ -123,20 +123,31 @@ Starting constants (all tunable in one header):
 Strafe jumping / bhop / air control emerge from the air-accel math. Rocket
 knockback applies to the shooter (rocket jumps).
 
+### Player classes
+
+Players can switch between three lightweight classes. **Ranger** is the baseline
+arena character and uses the rifle as primary. **Scout** has lower max health,
+higher movement speed, stronger/faster dash recovery, and uses a close-range
+shotgun as primary. **Tank** has higher max health, slightly higher outgoing
+damage, lower incoming damage, slower movement/dash recovery, and uses a fast
+low-damage LMG as primary. Class choice is sent as input and applied by the
+authoritative server; snapshots replicate class id for HUD/scoreboard/render
+feedback.
+
 ### Combat
 
-| | Rifle | Rocket launcher |
-|---|---|---|
-| type | hitscan ray | projectile, 25 m/s |
-| damage | 9 per hit | 100 direct; splash ≤ 100 in 3.5 m radius, linear falloff |
-| fire interval | 0.12 s | 0.8 s |
-| ammo | infinite | infinite |
-| knockback | small | strong (incl. self) |
+| | Rifle | Shotgun | LMG | Rocket launcher |
+|---|---|---|---|---|
+| type | hitscan ray | 7-pellet hitscan spread | fast hitscan ray | projectile, 25 m/s |
+| damage | 9 per hit | 8 per pellet | 2.5 per hit | 80 direct; splash ≤ 80 in 3.5 m radius, linear falloff |
+| fire interval | 0.12 s | 0.65 s | 0.055 s | 0.8 s |
+| ammo | infinite | infinite | infinite | infinite |
+| knockback | small | small per pellet | tiny | strong (incl. self) |
 
-100 HP, no armor. Health packs +25 (cap 100), 15 s respawn timer. Death →
-respawn after 2 s at the spawn point farthest from living enemies. Score: +1
-frag per kill, −1 for suicide. First to frag limit (default 20) wins → 10 s
-scoreboard → map restarts.
+Ranger has 100 HP; Scout/Tank adjust max health by class. Health packs +25
+(capped by class max), 15 s respawn timer. Death → respawn after 2 s at the
+spawn point farthest from living enemies. Score: +1 frag per kill, −1 for
+suicide. First to frag limit (default 20) wins → 10 s scoreboard → map restarts.
 
 ## Netcode
 

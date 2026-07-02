@@ -2,19 +2,36 @@
 
 #include "core/math.h"
 
+#include <cstdint>
 #include <vector>
 
 constexpr int AUDIO_SAMPLE_RATE = 48000;
+constexpr int AUDIO_MAX_VOICES = 64;
 
 struct Sound {
   std::vector<float> samples;
 };
 
+struct Voice {
+  bool active;
+  int sound_id;
+  int cursor;
+  float left_gain;
+  float right_gain;
+  uint32_t started;
+};
+
+struct SDL_AudioStream;
+
 struct Mixer {
   Sound sounds[32];
+  Voice voices[AUDIO_MAX_VOICES];
+  SDL_AudioStream* stream;
   Vec3 listener_pos;
   float listener_yaw;
+  uint32_t voice_clock;
   bool enabled;
+  bool owns_audio_subsystem;
 };
 
 bool audio_init(Mixer& m);

@@ -55,6 +55,7 @@ void client_send_input(Client& c, const PlayerInput& in) {
     nw_u32(w, h.sequence);
     nw_u8(w, h.buttons);
     nw_u8(w, h.weapon_switch);
+    nw_u8(w, h.class_switch);
     nw_f32(w, h.yaw);
     nw_f32(w, h.pitch);
   }

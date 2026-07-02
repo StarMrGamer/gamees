@@ -1,6 +1,7 @@
 #include <SDL3/SDL_main.h>
 
 #include "client/bot.h"
+#include "client/config.h"
 #include "client/game_client.h"
 #include "client/menu.h"
 #include "core/log.h"
@@ -10,6 +11,7 @@
 #include "server/dedicated.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -29,6 +31,52 @@ static bool parse_port(const char* s, uint16_t* out) {
   return true;
 }
 
+static bool parse_sensitivity(const char* s, float* out) {
+  if (!s || !out) return false;
+  char* end = nullptr;
+  float value = std::strtof(s, &end);
+  if (end == s || *end != 0 || value < 0.1f || value > 20.0f) return false;
+  *out = value;
+  return true;
+}
+
+static bool parse_player_class_arg(const char* s, uint8_t* out) {
+  if (!s || !out) return false;
+  if (std::strcmp(s, "ranger") == 0 || std::strcmp(s, "RANGER") == 0) {
+    *out = CLASS_RANGER;
+    return true;
+  }
+  if (std::strcmp(s, "scout") == 0 || std::strcmp(s, "SCOUT") == 0) {
+    *out = CLASS_SCOUT;
+    return true;
+  }
+  if (std::strcmp(s, "tank") == 0 || std::strcmp(s, "TANK") == 0) {
+    *out = CLASS_TANK;
+    return true;
+  }
+  return false;
+}
+
+static bool parse_jump_bind_arg(const char* s, uint8_t* out) {
+  return client_jump_bind_parse(s, out);
+}
+
+static void log_host_join_addresses(uint16_t port) {
+  log_info("hosting on UDP port %u", port);
+  NetAddress addrs[8]{};
+  int count = net_local_addresses(addrs, 8, port);
+  if (count <= 0) {
+    log_info("friends can join with --connect <your-ip>:%u; could not auto-detect a LAN IPv4 address", port);
+    return;
+  }
+  log_info("friends on your LAN can join with:");
+  for (int i = 0; i < count; ++i) {
+    char text[64]{};
+    net_address_to_string(addrs[i], text, sizeof(text));
+    log_info("  ./arena --connect %s --name player2", text);
+  }
+}
+
 int main(int argc, char** argv) {
   RunMode mode = MODE_MENU;
   const char* address = "127.0.0.1";
@@ -36,6 +84,8 @@ int main(int argc, char** argv) {
   const char* map_path = "maps/arena.txt";
   uint16_t port = DEFAULT_PORT;
   int fraglimit = DEFAULT_FRAG_LIMIT;
+  ClientSettings client_settings{};
+  client_config_load(client_settings);
 
   for (int i = 1; i < argc; ++i) {
     if (std::strcmp(argv[i], "--connect") == 0 && i + 1 < argc) {
@@ -57,6 +107,18 @@ int main(int argc, char** argv) {
       name = argv[++i];
     } else if (std::strcmp(argv[i], "--map") == 0 && i + 1 < argc) {
       map_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--sensitivity") == 0 && i + 1 < argc) {
+      if (!parse_sensitivity(argv[++i], &client_settings.sensitivity)) {
+        fatal_error("invalid --sensitivity, use a value from 0.1 to 20.0");
+      }
+    } else if (std::strcmp(argv[i], "--class") == 0 && i + 1 < argc) {
+      if (!parse_player_class_arg(argv[++i], &client_settings.player_class)) {
+        fatal_error("invalid --class, use ranger, scout, or tank");
+      }
+    } else if (std::strcmp(argv[i], "--jump") == 0 && i + 1 < argc) {
+      if (!parse_jump_bind_arg(argv[++i], &client_settings.jump_bind)) {
+        fatal_error("invalid --jump, use space, mwheelup, or mwheeldown");
+      }
     } else if (std::strcmp(argv[i], "--fly") == 0) {
       // Accepted for the world milestone; the current client always uses player camera.
     } else {
@@ -82,11 +144,12 @@ int main(int argc, char** argv) {
   if (mode == MODE_HOST) {
     ServerThread st{};
     if (!server_thread_start(st, port, map_path, fraglimit)) return 1;
+    log_host_join_addresses(port);
     char local[64];
     std::snprintf(local, sizeof(local), "127.0.0.1:%u", port);
     NetAddress server{};
     if (!net_address_parse(local, port, &server)) fatal_error("failed to parse loopback address");
-    return game_client_main(server, name, &st, map_path);
+    return game_client_main(server, name, &st, map_path, client_settings);
   }
 
   NetAddress server{};
@@ -98,5 +161,5 @@ int main(int argc, char** argv) {
     return bot_main(server, name, 0);
   }
 
-  return game_client_main(server, name, nullptr, map_path);
+  return game_client_main(server, name, nullptr, map_path, client_settings);
 }

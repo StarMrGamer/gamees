@@ -22,9 +22,25 @@ not on `PATH`, install it or place the contract-approved CMake release at
 ```sh
 ./build/arena --host
 ./build/arena --connect 127.0.0.1:27950 --name player2
+./build/arena --connect 127.0.0.1:27950 --name player2 --sensitivity 3.0
+./build/arena --connect 192.168.1.42:27950 --name player2 --class scout --jump mwheelup
 ./build/arena --dedicated --port 27950
 ./build/arena --bot 127.0.0.1:27950 --name bot1
 ```
 
-Controls in the SDL client are WASD movement, Space jump, Left Shift dash,
-Ctrl/C crouch, F fire, arrow keys look, and 1/2 weapon switch.
+When hosting, the game listens on all local interfaces and prints detected LAN
+join commands in the terminal. Other players can join with `--connect IP:27950`
+or by choosing Join by IP from the startup menu. Internet play still requires
+the host's router/firewall to allow UDP on the chosen port.
+
+Controls in the SDL client are WASD movement, Space jump by default, Left Shift
+dash, Ctrl/C crouch, F fire, arrow keys look, 1 class primary, 2 rocket, 3/4/5
+class switch (Ranger/Scout/Tank), and Escape for the settings menu. Jump can be
+changed to mouse wheel up/down in settings or with `--jump mwheelup` /
+`--jump mwheeldown`; in mouse-wheel mode, Space no longer jumps. Ranger primary
+is rifle, Scout primary is shotgun, and Tank primary is a fast low-damage LMG.
+
+Sensitivity and jump bind are saved to `arena.cfg` when changed in settings or
+when the client exits. Set `ARENA_CONFIG=/path/to/file.cfg` to use a different
+config file. Command-line `--sensitivity` and `--jump` override the saved values
+for that launch and are saved when the client exits.

@@ -19,6 +19,15 @@ enum Buttons : uint8_t {
 enum Weapon : uint8_t {
   WEAPON_RIFLE = 0,
   WEAPON_ROCKET = 1,
+  WEAPON_SHOTGUN = 2,
+  WEAPON_LMG = 3,
+};
+
+enum PlayerClass : uint8_t {
+  CLASS_RANGER = 0,
+  CLASS_SCOUT = 1,
+  CLASS_TANK = 2,
+  PLAYER_CLASS_COUNT = 3,
 };
 
 enum EventType : uint8_t {
@@ -47,8 +56,79 @@ struct PlayerInput {
   uint32_t sequence;
   uint8_t buttons;
   uint8_t weapon_switch;
+  uint8_t class_switch;
   float yaw, pitch;
 };
+
+inline uint8_t player_class_from_switch(uint8_t switch_value) {
+  return switch_value >= 1 && switch_value <= PLAYER_CLASS_COUNT
+    ? static_cast<uint8_t>(switch_value - 1)
+    : static_cast<uint8_t>(CLASS_RANGER);
+}
+
+inline const char* player_class_name(uint8_t player_class) {
+  switch (player_class) {
+    case CLASS_SCOUT: return "SCOUT";
+    case CLASS_TANK: return "TANK";
+    default: return "RANGER";
+  }
+}
+
+inline uint8_t player_class_primary_weapon(uint8_t player_class) {
+  switch (player_class) {
+    case CLASS_SCOUT: return WEAPON_SHOTGUN;
+    case CLASS_TANK: return WEAPON_LMG;
+    default: return WEAPON_RIFLE;
+  }
+}
+
+inline float player_class_max_health(uint8_t player_class) {
+  switch (player_class) {
+    case CLASS_SCOUT: return 85.0f;
+    case CLASS_TANK: return 125.0f;
+    default: return PLAYER_MAX_HEALTH;
+  }
+}
+
+inline float player_class_speed_scale(uint8_t player_class) {
+  switch (player_class) {
+    case CLASS_SCOUT: return 1.12f;
+    case CLASS_TANK: return 0.88f;
+    default: return 1.0f;
+  }
+}
+
+inline float player_class_dash_impulse_scale(uint8_t player_class) {
+  switch (player_class) {
+    case CLASS_SCOUT: return 1.10f;
+    case CLASS_TANK: return 0.90f;
+    default: return 1.0f;
+  }
+}
+
+inline float player_class_dash_cooldown_scale(uint8_t player_class) {
+  switch (player_class) {
+    case CLASS_SCOUT: return 0.80f;
+    case CLASS_TANK: return 1.20f;
+    default: return 1.0f;
+  }
+}
+
+inline float player_class_damage_scale(uint8_t player_class) {
+  switch (player_class) {
+    case CLASS_SCOUT: return 0.94f;
+    case CLASS_TANK: return 1.04f;
+    default: return 1.0f;
+  }
+}
+
+inline float player_class_damage_taken_scale(uint8_t player_class) {
+  switch (player_class) {
+    case CLASS_SCOUT: return 1.05f;
+    case CLASS_TANK: return 0.92f;
+    default: return 1.0f;
+  }
+}
 
 struct Player {
   bool active;
@@ -58,9 +138,14 @@ struct Player {
   float yaw, pitch;
   float health;
   uint8_t weapon;
+  uint8_t player_class;
   bool on_ground, crouching, sliding;
   float fire_cooldown, dash_cooldown, slide_time, respawn_timer, jump_buffer;
-  bool jump_held;
+  int stamina;
+  float stamina_recharge_timer;
+  Vec3 wall_normal;
+  float wall_contact_time, wall_jump_cooldown, dash_air_control_time;
+  bool jump_held, dash_held, air_jump_used;
   int frags;
   uint32_t last_input_seq;
 };

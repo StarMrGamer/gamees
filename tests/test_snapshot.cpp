@@ -15,7 +15,10 @@ TEST(snapshot_roundtrip_and_interpolate) {
   std::strcpy(s.players[0].name, "p0");
   s.players[0].pos = {1, 2, 3};
   s.players[0].health = 91;
+  s.players[0].player_class = CLASS_SCOUT;
   s.players[0].frags = 3;
+  s.players[0].stamina = 2;
+  s.players[0].stamina_recharge_timer = 0.75f;
   s.pickup_count = 1;
   s.pickups[0].present = true;
   s.pickups[0].pos = {4, 0, 4};
@@ -33,6 +36,8 @@ TEST(snapshot_roundtrip_and_interpolate) {
   CHECK_EQ_INT(read.tick, 42);
   CHECK(read.players[0].active);
   CHECK_NEAR(read.players[0].pos.z, 3.0f, 0.0001f);
+  CHECK_EQ_INT(read.players[0].player_class, CLASS_SCOUT);
+  CHECK_EQ_INT(read.players[0].stamina, 2);
 
   GameState b = read;
   b.players[0].pos = {3, 2, 3};
@@ -55,6 +60,7 @@ TEST(snapshot_worst_case_fits) {
     p.vel = {1, 2, 3};
     p.health = 100;
     p.frags = i;
+    p.stamina = MAX_STAMINA;
   }
   for (int i = 0; i < MAX_ROCKETS; ++i) {
     s.rockets[i].active = true;
