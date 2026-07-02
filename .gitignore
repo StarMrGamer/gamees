@@ -1,0 +1,12 @@
+/build/
+/.agents/
+/.codex/
+/.claude/
+
+*.o
+*.obj
+*.exe
+*.pdb
+*.ilk
+*.user
+*.log
