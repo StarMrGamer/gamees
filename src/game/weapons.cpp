@@ -11,19 +11,24 @@ static Vec3 player_center(const Player& p) {
   return p.pos + Vec3{0.0f, h * 0.5f, 0.0f};
 }
 
-static Vec3 player_eye(const Player& p) {
+Vec3 player_eye_pos(const Player& p) {
   float eye_h = p.crouching ? CROUCH_EYE_HEIGHT : EYE_HEIGHT;
   return p.pos + Vec3{0.0f, eye_h, 0.0f};
 }
 
-static Vec3 weapon_muzzle(const Player& p, Vec3 view_dir) {
+Vec3 weapon_muzzle_pos(const Player& p) {
+  Vec3 view_dir = vec3_normalize(angles_forward(p.yaw, p.pitch));
   Vec3 right = angles_right(p.yaw);
-  return player_eye(p) + view_dir * WEAPON_MUZZLE_FORWARD +
+  return player_eye_pos(p) + view_dir * WEAPON_MUZZLE_FORWARD +
          right * WEAPON_MUZZLE_RIGHT + Vec3{0.0f, -WEAPON_MUZZLE_DOWN, 0.0f};
 }
 
-static Vec3 side_aim_dir(const GameState& s, const Map& map, int shooter,
-                         Vec3 eye, Vec3 view_dir, Vec3 muzzle, float range) {
+// The shot leaves the muzzle (offset right/down from the eye) but is aimed to
+// pass through whatever the eye's centre ray hits, so shots land on the
+// crosshair rather than parallel-offset from it. Used for both the authoritative
+// hitscan and the client's tracer, so the two always agree.
+Vec3 weapon_converged_dir(const GameState& s, const Map& map, int shooter,
+                          Vec3 eye, Vec3 view_dir, Vec3 muzzle, float range) {
   float wall_t = ray_map(map, eye, view_dir, range);
   float hit_t = range;
   int hit = find_player_ray_hit(s, eye, view_dir, wall_t, shooter, &hit_t);
@@ -119,11 +124,11 @@ void weapon_fire(GameState& s, const Map& map, int shooter) {
   if (!p.active || !p.alive || p.fire_cooldown > 0.0f) return;
 
   Vec3 dir = vec3_normalize(angles_forward(p.yaw, p.pitch));
-  Vec3 eye = player_eye(p);
-  Vec3 origin = weapon_muzzle(p, dir);
+  Vec3 eye = player_eye_pos(p);
+  Vec3 origin = weapon_muzzle_pos(p);
   float aim_range = p.weapon == WEAPON_SHOTGUN ? SHOTGUN_RANGE :
                     (p.weapon == WEAPON_LMG ? LMG_RANGE : RIFLE_RANGE);
-  Vec3 shot_dir = side_aim_dir(s, map, shooter, eye, dir, origin, aim_range);
+  Vec3 shot_dir = weapon_converged_dir(s, map, shooter, eye, dir, origin, aim_range);
 
   if (p.weapon == WEAPON_ROCKET) {
     for (int i = 0; i < MAX_ROCKETS; ++i) {

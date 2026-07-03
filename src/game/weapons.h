@@ -13,3 +13,10 @@ void damage_player(GameState& s, int victim, int attacker, float amount, Vec3 kn
 // Deterministic pellet direction for a shotgun blast, shared by the server sim
 // and the client tracer renderer so the visual spread matches the shots fired.
 Vec3 shotgun_pellet_dir(Vec3 base, Vec3 right, int pellet);
+
+// Muzzle/eye geometry and crosshair convergence, shared so the client's tracers
+// leave the same muzzle and aim at the same point as the authoritative shot.
+Vec3 player_eye_pos(const Player& p);
+Vec3 weapon_muzzle_pos(const Player& p);
+Vec3 weapon_converged_dir(const GameState& s, const Map& map, int shooter,
+                          Vec3 eye, Vec3 view_dir, Vec3 muzzle, float range);

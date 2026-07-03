@@ -232,21 +232,29 @@ static void trace_one(ParticleSystem& particles, Rng& rng, const GameState& view
   }
 }
 
-static void spawn_weapon_tracers(ParticleSystem& particles, Rng& rng, const GameState& view,
-                                 const Map& map, int shooter, Vec3 muzzle, float yaw, float pitch,
-                                 uint8_t sound) {
+// Muzzle flash + tracers for one shot. The tracer leaves the offset muzzle but
+// is aimed with weapon_converged_dir (the exact rule the server shoots with), so
+// it lands on the crosshair rather than parallel-offset down-and-right of it.
+static void spawn_weapon_fx(ParticleSystem& particles, Rng& rng, const GameState& view,
+                            const Map& map, int shooter, uint8_t sound) {
+  const Player& sp = view.players[shooter];
+  Vec3 aim = vec3_normalize(angles_forward(sp.yaw, sp.pitch));
+  Vec3 eye = player_eye_pos(sp);
+  Vec3 muzzle = weapon_muzzle_pos(sp);
+  particles_muzzle_flash(particles, rng, muzzle, aim);
   if (sound == SND_ROCKET_LAUNCH) return;  // projectile has its own smoke trail
-  Vec3 aim = angles_forward(yaw, pitch);
+
+  float range = sound == SND_LMG ? LMG_RANGE : (sound == SND_SHOTGUN ? SHOTGUN_RANGE : RIFLE_RANGE);
+  Vec3 base = weapon_converged_dir(view, map, shooter, eye, aim, muzzle, range);
   Vec3 color = weapon_tracer_color(sound);
   if (sound == SND_SHOTGUN) {
-    Vec3 right = angles_right(yaw);
+    Vec3 right = angles_right(sp.yaw);
     for (int pellet = 0; pellet < SHOTGUN_PELLETS; ++pellet) {
       trace_one(particles, rng, view, map, shooter, muzzle,
-                shotgun_pellet_dir(aim, right, pellet), SHOTGUN_RANGE, color);
+                shotgun_pellet_dir(base, right, pellet), SHOTGUN_RANGE, color);
     }
   } else {
-    float range = sound == SND_LMG ? LMG_RANGE : RIFLE_RANGE;
-    trace_one(particles, rng, view, map, shooter, muzzle, aim, range, color);
+    trace_one(particles, rng, view, map, shooter, muzzle, base, range, color);
   }
 }
 
@@ -263,9 +271,7 @@ static void handle_events(const ClientEvents& events, const GameState& view, con
                  e.a == SND_ROCKET_LAUNCH) {
         int shooter = e.b;
         if (shooter >= 0 && shooter < MAX_PLAYERS && view.players[shooter].active) {
-          const Player& sp = view.players[shooter];
-          particles_muzzle_flash(particles, fx_rng, e.pos, angles_forward(sp.yaw, sp.pitch));
-          spawn_weapon_tracers(particles, fx_rng, view, map, shooter, e.pos, sp.yaw, sp.pitch, e.a);
+          spawn_weapon_fx(particles, fx_rng, view, map, shooter, e.a);
         }
       } else if (e.a == SND_PICKUP || e.a == SND_RESPAWN) {
         particles_sparks(particles, fx_rng, e.pos, {0.0f, 1.0f, 0.0f});

@@ -1,5 +1,6 @@
 #include "test_harness.h"
 
+#include "game/collision.h"
 #include "game/sim.h"
 #include "game/tuning.h"
 #include "game/weapons.h"
@@ -42,6 +43,35 @@ TEST(rifle_hits_far_target_immediately) {
   weapon_fire(s, map, a);
   CHECK_NEAR(s.players[b].health, 100.0f - RIFLE_DAMAGE, 0.0001f);
   CHECK_EQ_INT(s.rockets[0].active ? 1 : 0, 0);
+}
+
+TEST(shot_converges_to_crosshair_from_offset_muzzle) {
+  Map map{};
+  map.boxes[map.box_count++] = {{-20, -1, -20}, {20, 0, 20}, {1, 1, 1}};      // floor
+  map.boxes[map.box_count++] = {{-6, 0, -10.5f}, {6, 5, -10.0f}, {1, 1, 1}};  // wall dead ahead
+  map.spawns[0] = {0, 0, 0};
+  map.spawn_count = 1;
+
+  GameState s{};
+  game_init(s, map, 20);
+  int a = game_player_join(s, map, "a");
+  s.players[a].pos = {0, 0, 0};
+  s.players[a].yaw = 0.0f;
+  s.players[a].pitch = 0.0f;
+  const Player& p = s.players[a];
+
+  Vec3 eye = player_eye_pos(p);
+  Vec3 aim = vec3_normalize(angles_forward(p.yaw, p.pitch));
+  Vec3 muzzle = weapon_muzzle_pos(p);
+  CHECK(muzzle.x > 0.2f);  // muzzle sits to the right of the eye
+
+  Vec3 dir = weapon_converged_dir(s, map, a, eye, aim, muzzle, RIFLE_RANGE);
+  float t = ray_map(map, muzzle, dir, RIFLE_RANGE);
+  Vec3 impact = muzzle + dir * t;
+  // The shot leaves the offset muzzle but lands on the crosshair line (x~0),
+  // not parallel-offset to the right where the muzzle points.
+  CHECK_NEAR(impact.x, 0.0f, 0.05f);
+  CHECK_NEAR(impact.z, -10.0f, 0.2f);
 }
 
 TEST(rocket_spawns_from_side_muzzle) {
