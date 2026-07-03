@@ -49,6 +49,11 @@ constexpr float SHOTGUN_INTERVAL = 0.65f;
 constexpr float SHOTGUN_KNOCKBACK = 0.35f;
 constexpr float SHOTGUN_RANGE = 45.0f;
 constexpr float SHOTGUN_SPREAD = 0.085f;
+// Pellets do full damage inside FALLOFF_START and decay linearly to
+// MIN_DAMAGE_FRAC of base by FALLOFF_END, so the shotgun rewards closing in.
+constexpr float SHOTGUN_FALLOFF_START = 7.0f;
+constexpr float SHOTGUN_FALLOFF_END = 28.0f;
+constexpr float SHOTGUN_MIN_DAMAGE_FRAC = 0.30f;
 constexpr float LMG_DAMAGE = 2.5f;
 constexpr float LMG_INTERVAL = 0.055f;
 constexpr float LMG_KNOCKBACK = 0.12f;

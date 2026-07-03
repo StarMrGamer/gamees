@@ -33,7 +33,7 @@ static Vec3 side_aim_dir(const GameState& s, const Map& map, int shooter,
   return vec3_length(dir) > 0.0f ? dir : view_dir;
 }
 
-static Vec3 pellet_dir(Vec3 base, Vec3 right, int pellet) {
+Vec3 shotgun_pellet_dir(Vec3 base, Vec3 right, int pellet) {
   static const float offsets[SHOTGUN_PELLETS][2] = {
     {0.0f, 0.0f},
     {-1.0f, 0.0f},
@@ -49,13 +49,21 @@ static Vec3 pellet_dir(Vec3 base, Vec3 right, int pellet) {
                         up * (offsets[i][1] * SHOTGUN_SPREAD));
 }
 
+static float distance_falloff(float dist, float start, float end, float min_frac) {
+  if (min_frac >= 1.0f || end <= start || dist <= start) return 1.0f;
+  float t = clampf((dist - start) / (end - start), 0.0f, 1.0f);
+  return lerp(1.0f, min_frac, t);
+}
+
 static void fire_hitscan(GameState& s, const Map& map, int shooter, Vec3 origin, Vec3 shot_dir,
-                         float range, float damage, float knockback) {
+                         float range, float damage, float knockback,
+                         float falloff_start, float falloff_end, float min_frac) {
   float wall_t = ray_map(map, origin, shot_dir, range);
   float hit_t = range;
   int hit = find_player_ray_hit(s, origin, shot_dir, wall_t, shooter, &hit_t);
   if (hit >= 0) {
-    damage_player(s, hit, shooter, damage, shot_dir * knockback);
+    float scale = distance_falloff(hit_t, falloff_start, falloff_end, min_frac);
+    damage_player(s, hit, shooter, damage * scale, shot_dir * (knockback * scale));
   }
 }
 
@@ -135,19 +143,22 @@ void weapon_fire(GameState& s, const Map& map, int shooter) {
     Vec3 right = angles_right(p.yaw);
     float pellet_damage = SHOTGUN_DAMAGE * player_class_damage_scale(p.player_class);
     for (int pellet = 0; pellet < SHOTGUN_PELLETS; ++pellet) {
-      fire_hitscan(s, map, shooter, origin, pellet_dir(shot_dir, right, pellet),
-                   SHOTGUN_RANGE, pellet_damage, SHOTGUN_KNOCKBACK);
+      fire_hitscan(s, map, shooter, origin, shotgun_pellet_dir(shot_dir, right, pellet),
+                   SHOTGUN_RANGE, pellet_damage, SHOTGUN_KNOCKBACK,
+                   SHOTGUN_FALLOFF_START, SHOTGUN_FALLOFF_END, SHOTGUN_MIN_DAMAGE_FRAC);
     }
-    push_event(s, EV_SOUND, SND_RIFLE, static_cast<uint8_t>(shooter), origin);
+    push_event(s, EV_SOUND, SND_SHOTGUN, static_cast<uint8_t>(shooter), origin);
   } else if (p.weapon == WEAPON_LMG) {
     p.fire_cooldown = LMG_INTERVAL;
     fire_hitscan(s, map, shooter, origin, shot_dir, LMG_RANGE,
-                 LMG_DAMAGE * player_class_damage_scale(p.player_class), LMG_KNOCKBACK);
-    push_event(s, EV_SOUND, SND_RIFLE, static_cast<uint8_t>(shooter), origin);
+                 LMG_DAMAGE * player_class_damage_scale(p.player_class), LMG_KNOCKBACK,
+                 0.0f, 1.0f, 1.0f);
+    push_event(s, EV_SOUND, SND_LMG, static_cast<uint8_t>(shooter), origin);
   } else {
     p.fire_cooldown = RIFLE_INTERVAL;
     fire_hitscan(s, map, shooter, origin, shot_dir, RIFLE_RANGE,
-                 RIFLE_DAMAGE * player_class_damage_scale(p.player_class), RIFLE_KNOCKBACK);
+                 RIFLE_DAMAGE * player_class_damage_scale(p.player_class), RIFLE_KNOCKBACK,
+                 0.0f, 1.0f, 1.0f);
     push_event(s, EV_SOUND, SND_RIFLE, static_cast<uint8_t>(shooter), origin);
   }
 }

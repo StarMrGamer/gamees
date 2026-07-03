@@ -110,6 +110,19 @@ Sound synth_make(int sound_id) {
         float scuff = noise(rng) * std::pow(1.0f - u, 5.0f);
         return thud * 0.78f + scuff * 0.30f;
       });
+    case SND_SHOTGUN:
+      return render(0.24f, 1.0f, [](float t, float u, uint32_t& rng) {
+        float boom = sine(90.0f - 48.0f * u, t) * std::pow(1.0f - u, 1.5f);
+        float body = square(150.0f + 260.0f * (1.0f - u), t) * env_decay(u) * 0.4f;
+        float blast = noise(rng) * std::pow(1.0f - u, 2.2f);
+        return boom * 0.7f + body + blast * 0.55f;
+      });
+    case SND_LMG:
+      return render(0.06f, 0.7f, [](float t, float u, uint32_t& rng) {
+        float crack = square(200.0f + 620.0f * (1.0f - u), t) * env_decay(u);
+        float snap = noise(rng) * std::pow(1.0f - u, 8.0f);
+        return crack * 0.4f + snap * 0.6f;
+      });
     default:
       return render(0.10f, 0.30f, [](float t, float u, uint32_t&) {
         return sine(220.0f, t) * env_decay(u);

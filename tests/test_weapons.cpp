@@ -80,6 +80,38 @@ TEST(scout_primary_is_close_range_shotgun) {
   CHECK_NEAR(s.players[a].fire_cooldown, SHOTGUN_INTERVAL, 0.0001f);
 }
 
+TEST(shotgun_damage_falls_off_with_range) {
+  Map map = weapons_map();
+  GameState s{};
+  game_init(s, map, 20);
+  int a = game_player_join(s, map, "a");
+  int b = game_player_join(s, map, "b");
+  s.players[a].pos = {0, 0, 0};
+  s.players[a].yaw = 0.0f;
+  s.players[a].pitch = 0.0f;
+  s.players[a].weapon = WEAPON_SHOTGUN;
+
+  // Point blank: the whole pellet cone lands, no falloff.
+  s.players[b].pos = {0, 0, -2};
+  s.players[b].health = 200.0f;
+  s.players[a].fire_cooldown = 0.0f;
+  weapon_fire(s, map, a);
+  float near_dmg = 200.0f - s.players[b].health;
+
+  // Far: the cone has spread past the target so only the center pellet lands,
+  // and it lands for well under a full pellet's damage.
+  s.players[b].pos = {0, 0, -30};
+  s.players[b].health = 200.0f;
+  s.players[a].fire_cooldown = 0.0f;
+  weapon_fire(s, map, a);
+  float far_dmg = 200.0f - s.players[b].health;
+
+  CHECK(near_dmg > SHOTGUN_DAMAGE * 5.0f);
+  CHECK(far_dmg > 0.0f);
+  CHECK(far_dmg < SHOTGUN_DAMAGE * 0.6f);
+  CHECK(far_dmg < near_dmg * 0.2f);
+}
+
 TEST(tank_primary_is_fast_low_damage_lmg) {
   Map map = weapons_map();
   GameState s{};

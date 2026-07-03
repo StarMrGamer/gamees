@@ -58,3 +58,20 @@ void particles_muzzle_flash(ParticleSystem& ps, Rng&, Vec3 pos, Vec3 dir) {
 void particles_trail(ParticleSystem& ps, Rng& rng, Vec3 pos) {
   spawn_particle(ps, {pos, {rng_float(rng, -0.2f, 0.2f), rng_float(rng, -0.2f, 0.2f), rng_float(rng, -0.2f, 0.2f)}, {0.42f, 0.42f, 0.42f}, 0.45f, 0.45f, 0.08f, false});
 }
+
+// A bullet tracer: a short-lived line of bright dots from muzzle to impact.
+void particles_tracer(ParticleSystem& ps, Vec3 start, Vec3 end, Vec3 color) {
+  Vec3 delta = end - start;
+  float len = vec3_length(delta);
+  if (len < 0.05f) return;
+  Vec3 dir = delta / len;
+  int count = static_cast<int>(len / 0.7f) + 2;
+  if (count > 36) count = 36;
+  for (int i = 0; i < count; ++i) {
+    float f = static_cast<float>(i) / static_cast<float>(count - 1);
+    // Fade and thin toward the impact end so it reads as a streak, not a rod.
+    float taper = 1.0f - 0.5f * f;
+    spawn_particle(ps, {start + dir * (len * f), {0.0f, 0.0f, 0.0f}, color * taper,
+                        0.06f, 0.06f, 0.045f, false});
+  }
+}

@@ -25,3 +25,4 @@ void particles_explosion(ParticleSystem& ps, Rng& rng, Vec3 pos);
 void particles_sparks(ParticleSystem& ps, Rng& rng, Vec3 pos, Vec3 normal);
 void particles_muzzle_flash(ParticleSystem& ps, Rng& rng, Vec3 pos, Vec3 dir);
 void particles_trail(ParticleSystem& ps, Rng& rng, Vec3 pos);
+void particles_tracer(ParticleSystem& ps, Vec3 start, Vec3 end, Vec3 color);
