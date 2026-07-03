@@ -47,7 +47,7 @@ static void send_input_packet(Client& c) {
   for (int i = 0; i < count; ++i) {
     const PlayerInput& h = c.input_history[i];
     nw_u32(w, h.sequence);
-    nw_u8(w, h.buttons);
+    nw_u16(w, h.buttons);
     nw_u8(w, h.weapon_switch);
     nw_u8(w, h.class_switch);
     nw_f32(w, h.yaw);

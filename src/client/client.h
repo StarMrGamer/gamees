@@ -32,7 +32,7 @@ struct Client {
   double last_recv_time, connect_start_time, last_hello_time;
   double net_now;
   double next_input_send_time;
-  uint8_t pending_buttons;
+  uint16_t pending_buttons;
   uint8_t pending_weapon_switch;
   uint8_t pending_class_switch;
   PlayerInput sent_inputs[CLIENT_INPUT_RING];

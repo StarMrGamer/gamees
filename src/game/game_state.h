@@ -6,7 +6,7 @@
 #include <cmath>
 #include <cstdint>
 
-enum Buttons : uint8_t {
+enum Buttons : uint16_t {
   BTN_FORWARD = 1,
   BTN_BACK = 2,
   BTN_LEFT = 4,
@@ -15,6 +15,7 @@ enum Buttons : uint8_t {
   BTN_CROUCH = 32,
   BTN_FIRE = 64,
   BTN_DASH = 128,
+  BTN_AIRJUMP = 256,
 };
 
 enum Weapon : uint8_t {
@@ -51,12 +52,14 @@ enum SoundId : uint8_t {
   SND_DEATH,
   SND_RESPAWN,
   SND_LAND,
+  SND_SHOTGUN,
+  SND_LMG,
   SND_COUNT,
 };
 
 struct PlayerInput {
   uint32_t sequence;
-  uint8_t buttons;
+  uint16_t buttons;
   uint8_t weapon_switch;
   uint8_t class_switch;
   float yaw, pitch;
@@ -151,7 +154,8 @@ struct Player {
   float stamina_recharge_timer;
   Vec3 wall_normal;
   float wall_contact_time, wall_jump_cooldown, dash_air_control_time;
-  bool jump_held, dash_held, air_jump_used, slide_suppressed;
+  float air_jump_buffer;
+  bool jump_held, dash_held, air_jump_held, air_jump_used, slide_suppressed;
   uint8_t move_sound;
   int frags;
   uint32_t last_input_seq;

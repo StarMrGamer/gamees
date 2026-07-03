@@ -53,6 +53,38 @@ bool client_jump_bind_parse(const char* text, uint8_t* out) {
   return false;
 }
 
+const char* client_airjump_bind_name(uint8_t bind) {
+  switch (bind) {
+    case AIRJUMP_BIND_SPACE: return "space";
+    case AIRJUMP_BIND_MWHEEL_UP: return "mwheelup";
+    case AIRJUMP_BIND_MWHEEL_DOWN: return "mwheeldown";
+    default: return "jump";
+  }
+}
+
+bool client_airjump_bind_parse(const char* text, uint8_t* out) {
+  if (!text || !out) return false;
+  if (text_equals_ci(text, "jump") || text_equals_ci(text, "same")) {
+    *out = AIRJUMP_BIND_JUMP;
+    return true;
+  }
+  if (text_equals_ci(text, "space")) {
+    *out = AIRJUMP_BIND_SPACE;
+    return true;
+  }
+  if (text_equals_ci(text, "mwheelup") || text_equals_ci(text, "wheelup") ||
+      text_equals_ci(text, "up")) {
+    *out = AIRJUMP_BIND_MWHEEL_UP;
+    return true;
+  }
+  if (text_equals_ci(text, "mwheeldown") || text_equals_ci(text, "wheeldown") ||
+      text_equals_ci(text, "down")) {
+    *out = AIRJUMP_BIND_MWHEEL_DOWN;
+    return true;
+  }
+  return false;
+}
+
 static bool parse_sensitivity_value(const char* text, float* out) {
   if (!text || !out) return false;
   char* end = nullptr;
@@ -127,6 +159,10 @@ bool client_config_load(ClientSettings& settings) {
     } else if (text_equals_ci(key, "jump") || text_equals_ci(key, "jump_bind")) {
       uint8_t parsed = JUMP_BIND_SPACE;
       if (client_jump_bind_parse(value, &parsed)) settings.jump_bind = parsed;
+    } else if (text_equals_ci(key, "doublejump") || text_equals_ci(key, "airjump") ||
+               text_equals_ci(key, "airjump_bind")) {
+      uint8_t parsed = AIRJUMP_BIND_JUMP;
+      if (client_airjump_bind_parse(value, &parsed)) settings.airjump_bind = parsed;
     }
   }
   std::fclose(f);
@@ -143,6 +179,7 @@ bool client_config_save(const ClientSettings& settings) {
   std::fprintf(f, "# arena client config\n");
   std::fprintf(f, "sensitivity %.3f\n", settings.sensitivity);
   std::fprintf(f, "jump %s\n", client_jump_bind_name(settings.jump_bind));
+  std::fprintf(f, "doublejump %s\n", client_airjump_bind_name(settings.airjump_bind));
   std::fclose(f);
   return true;
 }

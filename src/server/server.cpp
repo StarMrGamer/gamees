@@ -115,7 +115,7 @@ static void handle_input(Server& sv, int slot_index, NetReader& r) {
   for (int i = 0; i < count; ++i) {
     PlayerInput in{};
     in.sequence = nr_u32(r);
-    in.buttons = nr_u8(r);
+    in.buttons = nr_u16(r);
     in.weapon_switch = nr_u8(r);
     in.class_switch = nr_u8(r);
     in.yaw = nr_f32(r);

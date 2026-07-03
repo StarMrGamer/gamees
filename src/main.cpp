@@ -61,6 +61,10 @@ static bool parse_jump_bind_arg(const char* s, uint8_t* out) {
   return client_jump_bind_parse(s, out);
 }
 
+static bool parse_airjump_bind_arg(const char* s, uint8_t* out) {
+  return client_airjump_bind_parse(s, out);
+}
+
 static void log_host_join_addresses(uint16_t port) {
   log_info("hosting on UDP port %u", port);
   NetAddress addrs[8]{};
@@ -118,6 +122,10 @@ int main(int argc, char** argv) {
     } else if (std::strcmp(argv[i], "--jump") == 0 && i + 1 < argc) {
       if (!parse_jump_bind_arg(argv[++i], &client_settings.jump_bind)) {
         fatal_error("invalid --jump, use space, mwheelup, or mwheeldown");
+      }
+    } else if (std::strcmp(argv[i], "--doublejump") == 0 && i + 1 < argc) {
+      if (!parse_airjump_bind_arg(argv[++i], &client_settings.airjump_bind)) {
+        fatal_error("invalid --doublejump, use jump, space, mwheelup, or mwheeldown");
       }
     } else if (std::strcmp(argv[i], "--fly") == 0) {
       // Accepted for the world milestone; the current client always uses player camera.

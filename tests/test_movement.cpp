@@ -190,7 +190,7 @@ TEST(double_jump_spends_stamina_once_per_airtime) {
   p.vel = {0.0f, -2.0f, 0.0f};
 
   PlayerInput in{};
-  in.buttons = BTN_JUMP;
+  in.buttons = BTN_JUMP | BTN_AIRJUMP;
   in.yaw = 0.0f;
   player_move(p, in, map, TICK_DT);
   CHECK(p.vel.y > DOUBLE_JUMP_VELOCITY * 0.9f);
@@ -199,11 +199,34 @@ TEST(double_jump_spends_stamina_once_per_airtime) {
 
   in.buttons = 0;
   player_move(p, in, map, TICK_DT);
-  in.buttons = BTN_JUMP;
+  in.buttons = BTN_JUMP | BTN_AIRJUMP;
   float before_y = p.vel.y;
   player_move(p, in, map, TICK_DT);
   CHECK(p.vel.y < before_y + 0.1f);
   CHECK_EQ_INT(p.stamina, MAX_STAMINA - 1);
+}
+
+TEST(double_jump_needs_its_own_button) {
+  Map map = movement_map();
+
+  // Jump button alone in mid-air (no wall) must NOT trigger the double jump.
+  Player only_jump = movement_player({0, 2, 0}, false);
+  only_jump.vel = {0.0f, -2.0f, 0.0f};
+  PlayerInput in{};
+  in.buttons = BTN_JUMP;
+  in.yaw = 0.0f;
+  player_move(only_jump, in, map, TICK_DT);
+  CHECK(only_jump.vel.y < 0.0f);
+  CHECK(!only_jump.air_jump_used);
+  CHECK_EQ_INT(only_jump.stamina, MAX_STAMINA);
+
+  // The dedicated airjump button triggers it.
+  Player air = movement_player({0, 2, 0}, false);
+  air.vel = {0.0f, -2.0f, 0.0f};
+  in.buttons = BTN_AIRJUMP;
+  player_move(air, in, map, TICK_DT);
+  CHECK(air.vel.y > DOUBLE_JUMP_VELOCITY * 0.9f);
+  CHECK(air.air_jump_used);
 }
 
 TEST(slide_boost_requires_rearm) {

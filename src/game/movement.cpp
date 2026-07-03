@@ -86,6 +86,7 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
   if (p.dash_cooldown > 0.0f) p.dash_cooldown -= dt;
   if (p.slide_time > 0.0f) p.slide_time -= dt;
   if (p.jump_buffer > 0.0f) p.jump_buffer -= dt;
+  if (p.air_jump_buffer > 0.0f) p.air_jump_buffer -= dt;
   if (p.wall_contact_time > 0.0f) p.wall_contact_time -= dt;
   if (p.wall_jump_cooldown > 0.0f) p.wall_jump_cooldown -= dt;
   if (p.dash_air_control_time > 0.0f) p.dash_air_control_time -= dt;
@@ -116,6 +117,11 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
   bool jump_down = (in.buttons & BTN_JUMP) != 0;
   if (jump_down && !p.jump_held) p.jump_buffer = JUMP_BUFFER_TIME;
   p.jump_held = jump_down;
+  // Double jump has its own buffer fed by BTN_AIRJUMP; by default the client
+  // mirrors the jump button onto it, so behaviour is unchanged unless rebound.
+  bool air_jump_down = (in.buttons & BTN_AIRJUMP) != 0;
+  if (air_jump_down && !p.air_jump_held) p.air_jump_buffer = JUMP_BUFFER_TIME;
+  p.air_jump_held = air_jump_down;
   bool dash_down = (in.buttons & BTN_DASH) != 0;
   bool dash_pressed = dash_down && !p.dash_held;
   p.dash_held = dash_down;
@@ -173,6 +179,7 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
     p.sliding = false;
     p.air_jump_used = false;
     p.jump_buffer = 0.0f;
+    p.air_jump_buffer = 0.0f;
     if (p.move_sound == 0) p.move_sound = SND_JUMP;
   }
 
@@ -201,6 +208,9 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
       p.wall_normal = wall;
       p.wall_contact_time = WALL_CONTACT_GRACE;
     }
+    // Wall jump stays on the primary jump button (it is contextual to touching
+    // a wall); the plain mid-air double jump lives on the separate airjump
+    // buffer so it can be rebound independently.
     if (p.jump_buffer > 0.0f && p.wall_contact_time > 0.0f && p.wall_jump_cooldown <= 0.0f) {
       Vec3 normal = vec3_normalize(p.wall_normal);
       Vec3 h = horizontal(p.vel);
@@ -210,13 +220,15 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
       if (vec3_length(wish) > 0.0f) p.vel += wish * WALL_JUMP_WISH_BOOST;
       p.vel.y = WALL_JUMP_UP_VELOCITY;
       p.jump_buffer = 0.0f;
+      p.air_jump_buffer = 0.0f;
       p.wall_jump_cooldown = WALL_JUMP_COOLDOWN;
       p.wall_contact_time = 0.0f;
       p.wall_normal = {0.0f, 0.0f, 0.0f};
       if (p.move_sound == 0) p.move_sound = SND_JUMP;
-    } else if (p.jump_buffer > 0.0f && !p.air_jump_used && spend_stamina(p)) {
+    } else if (p.air_jump_buffer > 0.0f && !p.air_jump_used && spend_stamina(p)) {
       p.vel.y = DOUBLE_JUMP_VELOCITY;
       p.air_jump_used = true;
+      p.air_jump_buffer = 0.0f;
       p.jump_buffer = 0.0f;
       if (p.move_sound == 0) p.move_sound = SND_JUMP;
     }

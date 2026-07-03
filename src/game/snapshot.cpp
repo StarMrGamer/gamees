@@ -23,6 +23,7 @@ static uint8_t player_flags2(const Player& p) {
   if (p.dash_held) flags |= 2;
   if (p.air_jump_used) flags |= 4;
   if (p.slide_suppressed) flags |= 8;
+  if (p.air_jump_held) flags |= 16;
   return flags;
 }
 
@@ -56,6 +57,7 @@ void snapshot_write(const GameState& s, NetWriter& w) {
     nw_u8(w, player_flags2(p));
     nw_f32(w, p.slide_time);
     nw_f32(w, p.jump_buffer);
+    nw_f32(w, p.air_jump_buffer);
     nw_f32(w, p.stamina_recharge_timer);
     nw_vec3(w, p.wall_normal);
     nw_f32(w, p.wall_contact_time);
@@ -154,8 +156,10 @@ bool snapshot_read(GameState& s, NetReader& r) {
     p.dash_held = (flags2 & 2) != 0;
     p.air_jump_used = (flags2 & 4) != 0;
     p.slide_suppressed = (flags2 & 8) != 0;
+    p.air_jump_held = (flags2 & 16) != 0;
     p.slide_time = nr_f32(r);
     p.jump_buffer = nr_f32(r);
+    p.air_jump_buffer = nr_f32(r);
     p.stamina_recharge_timer = nr_f32(r);
     p.wall_normal = nr_vec3(r);
     p.wall_contact_time = nr_f32(r);

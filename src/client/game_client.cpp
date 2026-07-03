@@ -5,8 +5,10 @@
 #include "client/client.h"
 #include "client/config.h"
 #include "core/log.h"
+#include "game/collision.h"
 #include "game/map.h"
 #include "game/tuning.h"
+#include "game/weapons.h"
 #include "render/hud.h"
 #include "render/particles.h"
 #include "render/renderer.h"
@@ -29,7 +31,7 @@ constexpr float SOURCE_MOUSE_DEGREES_PER_COUNT = 0.022f;
 constexpr float MIN_SENSITIVITY = 0.1f;
 constexpr float MAX_SENSITIVITY = 20.0f;
 constexpr float SENSITIVITY_STEP = 0.1f;
-constexpr int SETTINGS_ITEM_COUNT = 4;
+constexpr int SETTINGS_ITEM_COUNT = 5;
 
 static double app_seconds() {
   return static_cast<double>(SDL_GetTicks()) / 1000.0;
@@ -54,6 +56,22 @@ static bool jump_input_active(const ClientSettings& settings, const bool* keys, 
   if (settings.jump_bind == JUMP_BIND_MWHEEL_UP) return wheel_y > 0.0f;
   if (settings.jump_bind == JUMP_BIND_MWHEEL_DOWN) return wheel_y < 0.0f;
   return keys[SDL_SCANCODE_SPACE];
+}
+
+static uint8_t cycle_airjump_bind(uint8_t bind, int dir) {
+  int v = static_cast<int>(bind);
+  v = (v + dir + 4) % 4;
+  return static_cast<uint8_t>(v);
+}
+
+static bool airjump_input_active(const ClientSettings& settings, const bool* keys,
+                                 float wheel_y, bool jump_active) {
+  switch (settings.airjump_bind) {
+    case AIRJUMP_BIND_SPACE: return keys[SDL_SCANCODE_SPACE];
+    case AIRJUMP_BIND_MWHEEL_UP: return wheel_y > 0.0f;
+    case AIRJUMP_BIND_MWHEEL_DOWN: return wheel_y < 0.0f;
+    default: return jump_active;  // AIRJUMP_BIND_JUMP: mirror the jump button
+  }
 }
 
 static void set_mouse_capture(SDL_Window* window, bool capture) {
@@ -157,27 +175,25 @@ static void draw_scoreboard(Hud& hud, int w, int h, const GameState& s, int loca
 }
 
 static void draw_settings_menu(Hud& hud, int w, int h, const ClientSettings& settings, int selected) {
-  float panel_w = 420.0f;
-  float panel_h = 246.0f;
+  float panel_w = 460.0f;
+  float panel_h = 284.0f;
   float x = (static_cast<float>(w) - panel_w) * 0.5f;
   float y = (static_cast<float>(h) - panel_h) * 0.5f;
   hud_rect(hud, x, y, panel_w, panel_h, {0.03f, 0.035f, 0.04f}, 0.88f);
   hud_text_shadow(hud, x + 28.0f, y + 24.0f, 1.55f, {0.90f, 0.95f, 1.0f}, "SETTINGS");
 
-  const char* resume_prefix = selected == 0 ? "> " : "  ";
-  const char* sens_prefix = selected == 1 ? "> " : "  ";
-  const char* jump_prefix = selected == 2 ? "> " : "  ";
-  const char* quit_prefix = selected == 3 ? "> " : "  ";
   Vec3 active{1.0f, 0.86f, 0.35f};
   Vec3 idle{0.86f, 0.90f, 0.94f};
-  hud_text_shadow(hud, x + 36.0f, y + 74.0f, 1.20f, selected == 0 ? active : idle,
-                  "%sRESUME", resume_prefix);
-  hud_text_shadow(hud, x + 36.0f, y + 112.0f, 1.20f, selected == 1 ? active : idle,
-                  "%sSENSITIVITY %.2f", sens_prefix, settings.sensitivity);
-  hud_text_shadow(hud, x + 36.0f, y + 150.0f, 1.20f, selected == 2 ? active : idle,
-                  "%sJUMP %s", jump_prefix, client_jump_bind_name(settings.jump_bind));
-  hud_text_shadow(hud, x + 36.0f, y + 188.0f, 1.20f, selected == 3 ? active : idle,
-                  "%sQUIT", quit_prefix);
+  auto prefix = [selected](int item) { return selected == item ? "> " : "  "; };
+  auto color = [&](int item) { return selected == item ? active : idle; };
+  hud_text_shadow(hud, x + 36.0f, y + 74.0f, 1.20f, color(0), "%sRESUME", prefix(0));
+  hud_text_shadow(hud, x + 36.0f, y + 112.0f, 1.20f, color(1),
+                  "%sSENSITIVITY %.2f", prefix(1), settings.sensitivity);
+  hud_text_shadow(hud, x + 36.0f, y + 150.0f, 1.20f, color(2),
+                  "%sJUMP %s", prefix(2), client_jump_bind_name(settings.jump_bind));
+  hud_text_shadow(hud, x + 36.0f, y + 188.0f, 1.20f, color(3),
+                  "%sDOUBLE JUMP %s", prefix(3), client_airjump_bind_name(settings.airjump_bind));
+  hud_text_shadow(hud, x + 36.0f, y + 226.0f, 1.20f, color(4), "%sQUIT", prefix(4));
 }
 
 static void add_kill_feed(KillFeedItem feed[4], const GameState& s, const GameEvent& e) {
@@ -192,8 +208,50 @@ static void add_kill_feed(KillFeedItem feed[4], const GameState& s, const GameEv
   }
 }
 
-static void handle_events(const ClientEvents& events, const GameState& view, int local_index,
-                          Mixer& mixer, ParticleSystem& particles, Rng& fx_rng,
+static Vec3 weapon_tracer_color(uint8_t sound) {
+  switch (sound) {
+    case SND_SHOTGUN: return {1.0f, 0.62f, 0.24f};
+    case SND_LMG: return {1.0f, 0.86f, 0.42f};
+    default: return {0.66f, 0.90f, 1.0f};  // rifle
+  }
+}
+
+// Draw one hitscan tracer from muzzle to its first wall/player intersection,
+// with a spark burst on a wall impact. Endpoints are resolved against the
+// client's own view + map, so tracers are pure local juice (no protocol cost).
+static void trace_one(ParticleSystem& particles, Rng& rng, const GameState& view, const Map& map,
+                      int shooter, Vec3 muzzle, Vec3 dir, float range, Vec3 color) {
+  float wall_t = ray_map(map, muzzle, dir, range);
+  float hit_t = wall_t;
+  int hit = find_player_ray_hit(view, muzzle, dir, wall_t, shooter, &hit_t);
+  float end_t = hit >= 0 ? hit_t : wall_t;
+  Vec3 end = muzzle + dir * end_t;
+  particles_tracer(particles, muzzle, end, color);
+  if (hit < 0 && wall_t < range) {
+    particles_sparks(particles, rng, end, dir * -1.0f);
+  }
+}
+
+static void spawn_weapon_tracers(ParticleSystem& particles, Rng& rng, const GameState& view,
+                                 const Map& map, int shooter, Vec3 muzzle, float yaw, float pitch,
+                                 uint8_t sound) {
+  if (sound == SND_ROCKET_LAUNCH) return;  // projectile has its own smoke trail
+  Vec3 aim = angles_forward(yaw, pitch);
+  Vec3 color = weapon_tracer_color(sound);
+  if (sound == SND_SHOTGUN) {
+    Vec3 right = angles_right(yaw);
+    for (int pellet = 0; pellet < SHOTGUN_PELLETS; ++pellet) {
+      trace_one(particles, rng, view, map, shooter, muzzle,
+                shotgun_pellet_dir(aim, right, pellet), SHOTGUN_RANGE, color);
+    }
+  } else {
+    float range = sound == SND_LMG ? LMG_RANGE : RIFLE_RANGE;
+    trace_one(particles, rng, view, map, shooter, muzzle, aim, range, color);
+  }
+}
+
+static void handle_events(const ClientEvents& events, const GameState& view, const Map& map,
+                          int local_index, Mixer& mixer, ParticleSystem& particles, Rng& fx_rng,
                           KillFeedItem feed[4], float* hitmarker_timer) {
   for (int i = 0; i < events.count; ++i) {
     const GameEvent& e = events.events[i];
@@ -201,11 +259,13 @@ static void handle_events(const ClientEvents& events, const GameState& view, int
       audio_play_3d(mixer, e.a, e.pos, 1.0f);
       if (e.a == SND_EXPLOSION) {
         particles_explosion(particles, fx_rng, e.pos);
-      } else if (e.a == SND_RIFLE || e.a == SND_ROCKET_LAUNCH) {
+      } else if (e.a == SND_RIFLE || e.a == SND_LMG || e.a == SND_SHOTGUN ||
+                 e.a == SND_ROCKET_LAUNCH) {
         int shooter = e.b;
         if (shooter >= 0 && shooter < MAX_PLAYERS && view.players[shooter].active) {
-          particles_muzzle_flash(particles, fx_rng, e.pos,
-                                 angles_forward(view.players[shooter].yaw, view.players[shooter].pitch));
+          const Player& sp = view.players[shooter];
+          particles_muzzle_flash(particles, fx_rng, e.pos, angles_forward(sp.yaw, sp.pitch));
+          spawn_weapon_tracers(particles, fx_rng, view, map, shooter, e.pos, sp.yaw, sp.pitch, e.a);
         }
       } else if (e.a == SND_PICKUP || e.a == SND_RESPAWN) {
         particles_sparks(particles, fx_rng, e.pos, {0.0f, 1.0f, 0.0f});
@@ -314,16 +374,56 @@ static void draw_status_hud(Hud& hud, int w, int h, const Client& client, const 
   }
 }
 
-static void draw_player_health_marker(Renderer& renderer, const Camera& cam, const Player& p, float body_h) {
-  float full_w = 0.82f;
-  float fill_w = full_w * clampf(p.health / PLAYER_MAX_HEALTH, 0.0f, 1.0f);
-  Vec3 right = angles_right(cam.yaw);
-  Vec3 center = p.pos + Vec3{0.0f, body_h + 0.48f, 0.0f};
-  Vec3 color = p.health <= 30.0f ? Vec3{1.0f, 0.18f, 0.12f} : Vec3{0.20f, 1.0f, 0.38f};
-  renderer_draw_box(renderer, center, {full_w + 0.08f, 0.075f, 0.045f}, {0.025f, 0.028f, 0.032f}, cam.yaw);
-  if (fill_w > 0.01f) {
-    renderer_draw_box(renderer, center - right * ((full_w - fill_w) * 0.5f),
-                      {fill_w, 0.052f, 0.032f}, color, cam.yaw);
+static bool world_to_screen(const Renderer& renderer, Vec3 pos, int w, int h, float* sx, float* sy) {
+  Mat4 view_proj = mat4_mul(renderer.proj, renderer.view);
+  float clip_x = view_proj.m[0] * pos.x + view_proj.m[4] * pos.y +
+                 view_proj.m[8] * pos.z + view_proj.m[12];
+  float clip_y = view_proj.m[1] * pos.x + view_proj.m[5] * pos.y +
+                 view_proj.m[9] * pos.z + view_proj.m[13];
+  float clip_z = view_proj.m[2] * pos.x + view_proj.m[6] * pos.y +
+                 view_proj.m[10] * pos.z + view_proj.m[14];
+  float clip_w = view_proj.m[3] * pos.x + view_proj.m[7] * pos.y +
+                 view_proj.m[11] * pos.z + view_proj.m[15];
+  if (clip_w <= 0.01f) return false;
+
+  float ndc_x = clip_x / clip_w;
+  float ndc_y = clip_y / clip_w;
+  float ndc_z = clip_z / clip_w;
+  if (ndc_x < -1.0f || ndc_x > 1.0f || ndc_y < -1.0f || ndc_y > 1.0f ||
+      ndc_z < -1.0f || ndc_z > 1.0f) {
+    return false;
+  }
+
+  if (sx) *sx = (ndc_x * 0.5f + 0.5f) * static_cast<float>(w);
+  if (sy) *sy = (0.5f - ndc_y * 0.5f) * static_cast<float>(h);
+  return true;
+}
+
+static void draw_enemy_health_bars(Hud& hud, const Renderer& renderer, const GameState& view,
+                                   int local_index, int w, int h) {
+  for (int i = 0; i < MAX_PLAYERS; ++i) {
+    const Player& p = view.players[i];
+    if (!p.active || !p.alive || i == local_index) continue;
+
+    float body_h = p.crouching ? PLAYER_CROUCH_HEIGHT : PLAYER_HEIGHT;
+    Vec3 anchor = p.pos + Vec3{0.0f, body_h + 0.52f, 0.0f};
+    float sx = 0.0f;
+    float sy = 0.0f;
+    if (!world_to_screen(renderer, anchor, w, h, &sx, &sy)) continue;
+
+    float dist = vec3_length(p.pos - renderer.camera.pos);
+    float bar_w = clampf(84.0f - dist * 1.1f, 42.0f, 84.0f);
+    float bar_h = 7.0f;
+    float x = sx - bar_w * 0.5f;
+    float y = sy - 8.0f;
+    float max_health = player_class_max_health(p.player_class);
+    float frac = max_health > 0.0f ? clampf(p.health / max_health, 0.0f, 1.0f) : 0.0f;
+    Vec3 fill = frac <= 0.30f ? Vec3{1.0f, 0.18f, 0.12f} : Vec3{0.20f, 1.0f, 0.38f};
+
+    hud_rect(hud, x - 2.0f, y - 2.0f, bar_w + 4.0f, bar_h + 4.0f, {0.015f, 0.018f, 0.020f}, 0.84f);
+    hud_rect(hud, x, y, bar_w, bar_h, {0.10f, 0.12f, 0.14f}, 0.92f);
+    hud_rect(hud, x, y, bar_w * frac, bar_h, fill, 0.96f);
+    hud_rect(hud, x, y + bar_h + 2.0f, bar_w, 2.0f, player_class_tint(p.player_class), 0.86f);
   }
 }
 
@@ -343,7 +443,9 @@ static PlayerInput sample_input(uint8_t weapon_switch, uint8_t class_switch, con
   if (keys[SDL_SCANCODE_S]) in.buttons |= BTN_BACK;
   if (keys[SDL_SCANCODE_A]) in.buttons |= BTN_LEFT;
   if (keys[SDL_SCANCODE_D]) in.buttons |= BTN_RIGHT;
-  if (jump_input_active(settings, keys, wheel_y)) in.buttons |= BTN_JUMP;
+  bool jump_active = jump_input_active(settings, keys, wheel_y);
+  if (jump_active) in.buttons |= BTN_JUMP;
+  if (airjump_input_active(settings, keys, wheel_y, jump_active)) in.buttons |= BTN_AIRJUMP;
   if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_C]) in.buttons |= BTN_CROUCH;
   if (keys[SDL_SCANCODE_LSHIFT]) in.buttons |= BTN_DASH;
   if (keys[SDL_SCANCODE_F] || (mouse_buttons & SDL_BUTTON_LMASK)) in.buttons |= BTN_FIRE;
@@ -532,11 +634,19 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
             settings.jump_bind = cycle_jump_bind(settings.jump_bind, 1);
             client_config_save(settings);
           }
+          if (settings_selected == 3 && ev.key.key == SDLK_LEFT) {
+            settings.airjump_bind = cycle_airjump_bind(settings.airjump_bind, -1);
+            client_config_save(settings);
+          }
+          if (settings_selected == 3 && ev.key.key == SDLK_RIGHT) {
+            settings.airjump_bind = cycle_airjump_bind(settings.airjump_bind, 1);
+            client_config_save(settings);
+          }
           if (ev.key.key == SDLK_RETURN || ev.key.key == SDLK_KP_ENTER) {
             if (settings_selected == 0) {
               settings_open = false;
               set_mouse_capture(window, true);
-            } else if (settings_selected == 3) {
+            } else if (settings_selected == 4) {
               running = false;
             }
           }
@@ -617,7 +727,7 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
       cam.pitch = pitch;
     }
 
-    handle_events(events, view, client.player_index, mixer, particles, fx_rng, kill_feed, &hitmarker_timer);
+    handle_events(events, view, map, client.player_index, mixer, particles, fx_rng, kill_feed, &hitmarker_timer);
     particles_update(particles, dt);
     if (hitmarker_timer > 0.0f) hitmarker_timer -= dt;
     if (damage_timer > 0.0f) damage_timer -= dt;
@@ -640,7 +750,6 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
                         body_color, p.yaw);
       renderer_draw_box(renderer, p.pos + Vec3{0.0f, body_h + 0.18f, 0.0f},
                         {0.36f, 0.36f, 0.36f}, body_color * 1.15f, p.yaw);
-      draw_player_health_marker(renderer, cam, p, body_h);
     }
     for (int i = 0; i < MAX_ROCKETS; ++i) {
       const Rocket& r = view.rockets[i];
@@ -669,6 +778,7 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     renderer_end_frame(renderer);
 
     hud_begin(hud, w, h);
+    draw_enemy_health_bars(hud, renderer, view, client.player_index, w, h);
     draw_first_person_hud(hud, w, h, local_weapon);
     draw_status_hud(hud, w, h, client, view, map, kill_feed, hitmarker_timer, damage_timer, shown_fps);
     const bool* keys = SDL_GetKeyboardState(nullptr);
