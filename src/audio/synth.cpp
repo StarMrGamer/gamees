@@ -104,6 +104,12 @@ Sound synth_make(int sound_id) {
         float shimmer = sine(430.0f + 360.0f * u, t) + sine(645.0f + 240.0f * u, t) * 0.55f;
         return shimmer * env_attack_decay(u, 0.18f);
       });
+    case SND_LAND:
+      return render(0.11f, 0.46f, [](float t, float u, uint32_t& rng) {
+        float thud = sine(96.0f - 34.0f * u, t) * env_decay(u);
+        float scuff = noise(rng) * std::pow(1.0f - u, 5.0f);
+        return thud * 0.78f + scuff * 0.30f;
+      });
     default:
       return render(0.10f, 0.30f, [](float t, float u, uint32_t&) {
         return sine(220.0f, t) * env_decay(u);

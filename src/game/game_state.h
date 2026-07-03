@@ -3,6 +3,7 @@
 #include "core/math.h"
 #include "game/tuning.h"
 
+#include <cmath>
 #include <cstdint>
 
 enum Buttons : uint8_t {
@@ -49,6 +50,7 @@ enum SoundId : uint8_t {
   SND_HURT,
   SND_DEATH,
   SND_RESPAWN,
+  SND_LAND,
   SND_COUNT,
 };
 
@@ -59,6 +61,10 @@ struct PlayerInput {
   uint8_t class_switch;
   float yaw, pitch;
 };
+
+inline bool player_input_sane(const PlayerInput& in) {
+  return std::isfinite(in.yaw) && std::isfinite(in.pitch);
+}
 
 inline uint8_t player_class_from_switch(uint8_t switch_value) {
   return switch_value >= 1 && switch_value <= PLAYER_CLASS_COUNT
@@ -145,7 +151,8 @@ struct Player {
   float stamina_recharge_timer;
   Vec3 wall_normal;
   float wall_contact_time, wall_jump_cooldown, dash_air_control_time;
-  bool jump_held, dash_held, air_jump_used;
+  bool jump_held, dash_held, air_jump_used, slide_suppressed;
+  uint8_t move_sound;
   int frags;
   uint32_t last_input_seq;
 };

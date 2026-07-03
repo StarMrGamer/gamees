@@ -206,6 +206,69 @@ TEST(double_jump_spends_stamina_once_per_airtime) {
   CHECK_EQ_INT(p.stamina, MAX_STAMINA - 1);
 }
 
+TEST(slide_boost_requires_rearm) {
+  Map map = movement_map();
+  Player p = movement_player({0, 0, 0}, true);
+  p.vel = {12.0f, 0.0f, 0.0f};
+
+  PlayerInput in{};
+  in.buttons = BTN_CROUCH;
+  player_move(p, in, map, TICK_DT);
+  CHECK(p.sliding);
+  CHECK_EQ_INT(p.move_sound, SND_SLIDE);
+  CHECK(vec3_length({p.vel.x, 0.0f, p.vel.z}) > 12.5f);
+
+  // Ride the slide out with crouch held; keep speed above the trigger so a
+  // re-trigger would show up as a fresh +SLIDE_BOOST spike. Position is pinned
+  // so the player can't slide off the test floor.
+  for (int i = 0; i < TICK_RATE * 2; ++i) {
+    p.pos = {0.0f, p.pos.y, 0.0f};
+    p.vel = {12.0f, 0.0f, 0.0f};
+    player_move(p, in, map, TICK_DT);
+    CHECK(vec3_length({p.vel.x, 0.0f, p.vel.z}) < 13.0f);
+  }
+  CHECK(!p.sliding);
+  CHECK(p.on_ground);
+  p.pos = {0.0f, p.pos.y, 0.0f};
+
+  // Releasing crouch re-arms the slide.
+  in.buttons = 0;
+  player_move(p, in, map, TICK_DT);
+  p.vel = {12.0f, 0.0f, 0.0f};
+  in.buttons = BTN_CROUCH;
+  player_move(p, in, map, TICK_DT);
+  CHECK(p.sliding);
+}
+
+TEST(player_move_reports_movement_sounds) {
+  Map map = movement_map();
+  Player p = movement_player({0, 0, 0}, true);
+
+  PlayerInput in{};
+  in.buttons = BTN_JUMP;
+  player_move(p, in, map, TICK_DT);
+  CHECK_EQ_INT(p.move_sound, SND_JUMP);
+
+  in.buttons = 0;
+  player_move(p, in, map, TICK_DT);
+  CHECK_EQ_INT(p.move_sound, 0);
+
+  Player faller = movement_player({0, 3.0f, 0}, false);
+  faller.vel = {0.0f, -6.0f, 0.0f};
+  int guard = 0;
+  while (!faller.on_ground && guard++ < TICK_RATE * 3) {
+    player_move(faller, in, map, TICK_DT);
+  }
+  CHECK(faller.on_ground);
+  CHECK_EQ_INT(faller.move_sound, SND_LAND);
+
+  Player dasher = movement_player({0, 0, 0}, true);
+  PlayerInput dash_in{};
+  dash_in.buttons = BTN_DASH | BTN_FORWARD;
+  player_move(dasher, dash_in, map, TICK_DT);
+  CHECK_EQ_INT(dasher.move_sound, SND_DASH);
+}
+
 TEST(arena_spawns_face_movable_space) {
   Map map{};
   CHECK(map_load("maps/arena.txt", &map));

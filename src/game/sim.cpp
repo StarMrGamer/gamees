@@ -178,14 +178,9 @@ void game_tick(GameState& s, const Map& map, const PlayerInput inputs[MAX_PLAYER
     if (in.weapon_switch == 2) p.weapon = WEAPON_ROCKET;
     if (in.sequence >= p.last_input_seq) p.last_input_seq = in.sequence;
 
-    bool old_ground = p.on_ground;
-    bool old_sliding = p.sliding;
     player_move(p, in, map, TICK_DT);
-    if (!old_ground && p.on_ground) {
-      push_event(s, EV_SOUND, SND_JUMP, static_cast<uint8_t>(i), p.pos);
-    }
-    if (!old_sliding && p.sliding) {
-      push_event(s, EV_SOUND, SND_SLIDE, static_cast<uint8_t>(i), p.pos);
+    if (p.move_sound != 0) {
+      push_event(s, EV_SOUND, p.move_sound, static_cast<uint8_t>(i), p.pos);
     }
     if (in.buttons & BTN_FIRE) {
       weapon_fire(s, map, i);

@@ -79,6 +79,7 @@ static Vec3 wall_probe_normal(const Map& map, Vec3 pos, bool crouching) {
 }
 
 void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
+  p.move_sound = 0;
   p.yaw = in.yaw;
   p.pitch = clampf(in.pitch, -1.5f, 1.5f);
 
@@ -122,11 +123,17 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
   bool queued_jump = p.on_ground && p.jump_buffer > 0.0f;
   bool slide_jump = queued_jump && p.sliding;
   float speed = vec3_length(horizontal(p.vel));
-  if (want_crouch && p.on_ground && speed > SLIDE_TRIGGER_SPEED && !p.sliding) {
+  // Slide re-arms only after leaving the ground or releasing crouch, so holding
+  // crouch past the slide's end cannot chain +SLIDE_BOOST forever.
+  if (!want_crouch || !p.on_ground) p.slide_suppressed = false;
+  if (want_crouch && p.on_ground && speed > SLIDE_TRIGGER_SPEED && !p.sliding &&
+      !p.slide_suppressed) {
     p.sliding = true;
+    p.slide_suppressed = true;
     p.slide_time = SLIDE_DURATION;
     Vec3 dir = vec3_normalize(horizontal(p.vel));
     p.vel += dir * SLIDE_BOOST;
+    if (p.move_sound == 0) p.move_sound = SND_SLIDE;
   }
   if (!want_crouch || p.slide_time <= 0.0f || !p.on_ground) {
     p.sliding = false;
@@ -153,6 +160,7 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
     p.vel += dir * (DASH_IMPULSE * player_class_dash_impulse_scale(p.player_class));
     p.dash_cooldown = DASH_COOLDOWN * player_class_dash_cooldown_scale(p.player_class);
     if (jump_down) p.dash_air_control_time = DASH_JUMP_AIR_CONTROL_TIME;
+    if (p.move_sound == 0) p.move_sound = SND_DASH;
   }
 
   if (p.on_ground && p.jump_buffer > 0.0f) {
@@ -165,6 +173,7 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
     p.sliding = false;
     p.air_jump_used = false;
     p.jump_buffer = 0.0f;
+    if (p.move_sound == 0) p.move_sound = SND_JUMP;
   }
 
   if (!p.on_ground) {
@@ -173,6 +182,8 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
     p.vel.y = 0.0f;
   }
 
+  bool was_airborne = !p.on_ground;
+  float fall_speed = -p.vel.y;
   MoveResult mr = move_slide(map, p.pos, p.vel, p.crouching, dt);
   p.pos = mr.pos;
   p.vel = mr.vel;
@@ -181,6 +192,9 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
     p.wall_contact_time = 0.0f;
     p.wall_normal = {0.0f, 0.0f, 0.0f};
     p.air_jump_used = false;
+    if (was_airborne && fall_speed > LAND_SOUND_MIN_FALL_SPEED && p.move_sound == 0) {
+      p.move_sound = SND_LAND;
+    }
   } else {
     Vec3 wall = vec3_length(mr.wall_normal) > 0.0f ? mr.wall_normal : wall_probe_normal(map, p.pos, p.crouching);
     if (vec3_length(wall) > 0.0f) {
@@ -199,10 +213,12 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
       p.wall_jump_cooldown = WALL_JUMP_COOLDOWN;
       p.wall_contact_time = 0.0f;
       p.wall_normal = {0.0f, 0.0f, 0.0f};
+      if (p.move_sound == 0) p.move_sound = SND_JUMP;
     } else if (p.jump_buffer > 0.0f && !p.air_jump_used && spend_stamina(p)) {
       p.vel.y = DOUBLE_JUMP_VELOCITY;
       p.air_jump_used = true;
       p.jump_buffer = 0.0f;
+      if (p.move_sound == 0) p.move_sound = SND_JUMP;
     }
   }
 }
