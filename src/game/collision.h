@@ -15,6 +15,7 @@ bool map_box_overlap(const Map& map, const Aabb& box);
 struct MoveResult {
   Vec3 pos;
   Vec3 vel;
+  Vec3 wall_normal;
   bool on_ground;
   bool hit_ceiling;
 };

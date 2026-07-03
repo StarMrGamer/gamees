@@ -96,7 +96,7 @@ static bool try_step(const Map& map, Vec3& pos, int axis, float delta, bool crou
 }
 
 MoveResult move_slide(const Map& map, Vec3 pos, Vec3 vel, bool crouching, float dt) {
-  MoveResult r{pos, vel, false, false};
+  MoveResult r{pos, vel, {0, 0, 0}, false, false};
 
   float deltas[3] = {vel.x * dt, vel.y * dt, vel.z * dt};
   for (int axis : {0, 2}) {
@@ -110,6 +110,8 @@ MoveResult move_slide(const Map& map, Vec3 pos, Vec3 vel, bool crouching, float 
       if (!blocked_at(map, next, crouching)) {
         r.pos = next;
       } else if (!grounded_at(map, r.pos, crouching) || !try_step(map, r.pos, axis, step, crouching)) {
+        if (axis == 0) r.wall_normal = step > 0.0f ? Vec3{-1.0f, 0.0f, 0.0f} : Vec3{1.0f, 0.0f, 0.0f};
+        if (axis == 2) r.wall_normal = step > 0.0f ? Vec3{0.0f, 0.0f, -1.0f} : Vec3{0.0f, 0.0f, 1.0f};
         if (axis == 0) r.vel.x = 0.0f;
         if (axis == 2) r.vel.z = 0.0f;
         break;
