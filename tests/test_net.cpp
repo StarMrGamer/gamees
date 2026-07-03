@@ -1,8 +1,10 @@
 #include "test_harness.h"
 
+#include "game/game_state.h"
 #include "net/protocol.h"
 
 #include <cstring>
+#include <limits>
 
 TEST(packet_roundtrip) {
   uint8_t buf[128];
@@ -28,6 +30,16 @@ TEST(packet_roundtrip) {
   nr_string(r, s, sizeof(s));
   CHECK(std::strcmp(s, "abcdefghijklmno") == 0);
   CHECK(!r.error);
+}
+
+TEST(player_input_sane_rejects_non_finite_aim) {
+  PlayerInput in{};
+  CHECK(player_input_sane(in));
+  in.yaw = std::numeric_limits<float>::quiet_NaN();
+  CHECK(!player_input_sane(in));
+  in.yaw = 0.0f;
+  in.pitch = std::numeric_limits<float>::infinity();
+  CHECK(!player_input_sane(in));
 }
 
 TEST(packet_truncation_sets_error) {

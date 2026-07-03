@@ -15,6 +15,17 @@ static uint8_t player_flags(const Player& p) {
   return flags;
 }
 
+// Movement-internal state: replicated so the owning client can re-run
+// player_move() from a snapshot for prediction and get server-identical results.
+static uint8_t player_flags2(const Player& p) {
+  uint8_t flags = 0;
+  if (p.jump_held) flags |= 1;
+  if (p.dash_held) flags |= 2;
+  if (p.air_jump_used) flags |= 4;
+  if (p.slide_suppressed) flags |= 8;
+  return flags;
+}
+
 void snapshot_write(const GameState& s, NetWriter& w) {
   nw_u32(w, s.tick);
   nw_u8(w, s.match_over ? 1 : 0);
@@ -42,6 +53,14 @@ void snapshot_write(const GameState& s, NetWriter& w) {
     nw_f32(w, p.respawn_timer);
     nw_u32(w, static_cast<uint32_t>(p.frags));
     nw_u32(w, p.last_input_seq);
+    nw_u8(w, player_flags2(p));
+    nw_f32(w, p.slide_time);
+    nw_f32(w, p.jump_buffer);
+    nw_f32(w, p.stamina_recharge_timer);
+    nw_vec3(w, p.wall_normal);
+    nw_f32(w, p.wall_contact_time);
+    nw_f32(w, p.wall_jump_cooldown);
+    nw_f32(w, p.dash_air_control_time);
   }
 
   int rocket_count = 0;
@@ -72,7 +91,15 @@ void snapshot_write(const GameState& s, NetWriter& w) {
   for (int i = 0; i < MAX_EVENTS; ++i) {
     const GameEvent& e = s.events[i];
     if (e.id == 0 || e.tick < min_tick) continue;
-    if (event_count < 16) newest[event_count++] = e;
+    if (event_count < 16) {
+      newest[event_count++] = e;
+    } else {
+      int lowest = 0;
+      for (int k = 1; k < 16; ++k) {
+        if (newest[k].id < newest[lowest].id) lowest = k;
+      }
+      if (e.id > newest[lowest].id) newest[lowest] = e;
+    }
   }
   nw_u8(w, static_cast<uint8_t>(event_count));
   for (int i = 0; i < event_count; ++i) {
@@ -122,6 +149,18 @@ bool snapshot_read(GameState& s, NetReader& r) {
     p.respawn_timer = nr_f32(r);
     p.frags = static_cast<int>(nr_u32(r));
     p.last_input_seq = nr_u32(r);
+    uint8_t flags2 = nr_u8(r);
+    p.jump_held = (flags2 & 1) != 0;
+    p.dash_held = (flags2 & 2) != 0;
+    p.air_jump_used = (flags2 & 4) != 0;
+    p.slide_suppressed = (flags2 & 8) != 0;
+    p.slide_time = nr_f32(r);
+    p.jump_buffer = nr_f32(r);
+    p.stamina_recharge_timer = nr_f32(r);
+    p.wall_normal = nr_vec3(r);
+    p.wall_contact_time = nr_f32(r);
+    p.wall_jump_cooldown = nr_f32(r);
+    p.dash_air_control_time = nr_f32(r);
   }
 
   int rocket_count = nr_u8(r);

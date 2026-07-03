@@ -84,6 +84,26 @@ static void handle_hello(Server& sv, NetAddress from, NetReader& r) {
   send_accept(sv, slot);
 }
 
+// Insert one input in sequence order, dropping already-applied or duplicate
+// sequences. The queue absorbs bursty arrival so server_tick can consume
+// exactly one input per tick — which is what client prediction replays.
+static void queue_input(ClientSlot& slot, const PlayerInput& in) {
+  if (in.sequence <= slot.highest_input_seq) return;
+  for (int i = 0; i < slot.input_queue_len; ++i) {
+    if (slot.input_queue[i].sequence == in.sequence) return;
+  }
+  if (slot.input_queue_len == SERVER_INPUT_QUEUE) {
+    for (int i = 1; i < SERVER_INPUT_QUEUE; ++i) slot.input_queue[i - 1] = slot.input_queue[i];
+    --slot.input_queue_len;
+  }
+  int pos = slot.input_queue_len++;
+  while (pos > 0 && slot.input_queue[pos - 1].sequence > in.sequence) {
+    slot.input_queue[pos] = slot.input_queue[pos - 1];
+    --pos;
+  }
+  slot.input_queue[pos] = in;
+}
+
 static void handle_input(Server& sv, int slot_index, NetReader& r) {
   if (slot_index < 0) return;
   ClientSlot& slot = sv.clients[slot_index];
@@ -92,8 +112,6 @@ static void handle_input(Server& sv, int slot_index, NetReader& r) {
     r.error = true;
     return;
   }
-  PlayerInput best = slot.latest_input;
-  uint32_t best_seq = slot.highest_input_seq;
   for (int i = 0; i < count; ++i) {
     PlayerInput in{};
     in.sequence = nr_u32(r);
@@ -102,14 +120,9 @@ static void handle_input(Server& sv, int slot_index, NetReader& r) {
     in.class_switch = nr_u8(r);
     in.yaw = nr_f32(r);
     in.pitch = nr_f32(r);
-    if (in.sequence > best_seq) {
-      best = in;
-      best_seq = in.sequence;
-    }
-  }
-  if (!r.error && best_seq > slot.highest_input_seq) {
-    slot.latest_input = best;
-    slot.highest_input_seq = best_seq;
+    if (r.error) return;
+    if (!player_input_sane(in)) continue;
+    queue_input(slot, in);
   }
 }
 
@@ -151,9 +164,29 @@ void server_pump(Server& sv, double now) {
 void server_tick(Server& sv) {
   PlayerInput inputs[MAX_PLAYERS]{};
   for (int i = 0; i < MAX_PLAYERS; ++i) {
-    if (!sv.clients[i].used) continue;
-    int p = sv.clients[i].player_index;
-    if (p >= 0 && p < MAX_PLAYERS) inputs[p] = sv.clients[i].latest_input;
+    ClientSlot& slot = sv.clients[i];
+    if (!slot.used) continue;
+    // After a burst (client hitch), skip to the two newest queued inputs so
+    // queued latency cannot build up permanently.
+    while (slot.input_queue_len > 2) {
+      for (int k = 1; k < slot.input_queue_len; ++k) slot.input_queue[k - 1] = slot.input_queue[k];
+      --slot.input_queue_len;
+    }
+    if (slot.input_queue_len > 0) {
+      slot.latest_input = slot.input_queue[0];
+      slot.highest_input_seq = slot.latest_input.sequence;
+      for (int k = 1; k < slot.input_queue_len; ++k) slot.input_queue[k - 1] = slot.input_queue[k];
+      --slot.input_queue_len;
+    }
+    PlayerInput in = slot.latest_input;
+    if (sv.now - slot.last_recv_time > INPUT_STALE_TIME) {
+      // Starved of packets: keep aim but stop running/firing with ghost input.
+      in.buttons = 0;
+      in.weapon_switch = 0;
+      in.class_switch = 0;
+    }
+    int p = slot.player_index;
+    if (p >= 0 && p < MAX_PLAYERS) inputs[p] = in;
   }
   game_tick(sv.state, sv.map, inputs, sv.rng);
 }

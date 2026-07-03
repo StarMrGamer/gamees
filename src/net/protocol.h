@@ -5,8 +5,8 @@
 #include <cstdint>
 
 constexpr uint32_t PROTOCOL_MAGIC = 0x414E5241u;
-constexpr uint8_t PROTOCOL_VERSION = 3;
-constexpr int MAX_PACKET = 2048;
+constexpr uint8_t PROTOCOL_VERSION = 4;
+constexpr int MAX_PACKET = 4096;
 constexpr uint16_t DEFAULT_PORT = 27950;
 
 enum PacketType : uint8_t {

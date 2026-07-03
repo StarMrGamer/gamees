@@ -12,6 +12,8 @@ struct ClientSlot {
   double last_recv_time;
   PlayerInput latest_input;
   uint32_t highest_input_seq;
+  PlayerInput input_queue[SERVER_INPUT_QUEUE];
+  int input_queue_len;
 };
 
 struct Server {
