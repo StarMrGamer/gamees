@@ -24,6 +24,7 @@ not on `PATH`, install it or place the contract-approved CMake release at
 ./build/arena --connect 127.0.0.1:27950 --name player2
 ./build/arena --connect 127.0.0.1:27950 --name player2 --sensitivity 3.0
 ./build/arena --connect 192.168.1.42:27950 --name player2 --class scout --jump mwheelup
+./build/arena --connect 127.0.0.1:27950 --name player2 --jump mwheelup --doublejump space
 ./build/arena --dedicated --port 27950
 ./build/arena --bot 127.0.0.1:27950 --name bot1
 ```
@@ -37,8 +38,15 @@ Controls in the SDL client are WASD movement, Space jump by default, Left Shift
 dash, Ctrl/C crouch, F fire, arrow keys look, 1 class primary, 2 rocket, 3/4/5
 class switch (Ranger/Scout/Tank), and Escape for the settings menu. Jump can be
 changed to mouse wheel up/down in settings or with `--jump mwheelup` /
-`--jump mwheeldown`; in mouse-wheel mode, Space no longer jumps. Ranger primary
-is rifle, Scout primary is shotgun, and Tank primary is a fast low-damage LMG.
+`--jump mwheeldown`; in mouse-wheel mode, Space no longer jumps.
+
+The mid-air double jump has its own bind, separate from the ground jump. By
+default it follows the jump button, but it can be moved onto its own key or
+wheel in the settings menu or with `--doublejump space|mwheelup|mwheeldown`
+(`--doublejump jump` restores the default). Wall jumps stay on the primary jump
+button. Ranger primary is rifle, Scout primary is shotgun, and Tank primary is a
+fast low-damage LMG; each weapon has its own report and bullet tracers, and
+shotgun pellets lose damage with distance, so the shotgun rewards closing in.
 
 Sensitivity and jump bind are saved to `arena.cfg` when changed in settings or
 when the client exits. Set `ARENA_CONFIG=/path/to/file.cfg` to use a different
@@ -53,5 +61,5 @@ simulation on top of each snapshot, so movement and bunny hopping feel
 instant regardless of latency. Remote players interpolate one snapshot
 interval behind. Prediction needs the server's map available locally at
 `maps/<name>.txt` (logged at connect); without it the client falls back to
-rendering raw server state. Protocol version 4 — older builds cannot
+rendering raw server state. Protocol version 5 — older builds cannot
 interoperate.

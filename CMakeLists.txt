@@ -49,6 +49,7 @@ target_include_directories(arena PRIVATE src)
 target_link_libraries(arena PRIVATE SDL3::SDL3)
 
 add_executable(arena_tests
+  tests/test_client.cpp
   tests/test_collision.cpp
   tests/test_main.cpp
   tests/test_map.cpp
@@ -67,6 +68,10 @@ target_link_libraries(arena_tests PRIVATE SDL3::SDL3)
 if(WIN32)
   target_link_libraries(arena PRIVATE ws2_32)
   target_link_libraries(arena_tests PRIVATE ws2_32)
+  if(MINGW)
+    target_link_options(arena PRIVATE -static-libgcc -static-libstdc++ -Wl,-Bstatic,-lwinpthread,-Bdynamic)
+    target_link_options(arena_tests PRIVATE -static-libgcc -static-libstdc++ -Wl,-Bstatic,-lwinpthread,-Bdynamic)
+  endif()
 endif()
 
 if(MSVC)
