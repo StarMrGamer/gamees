@@ -1,6 +1,7 @@
 #pragma once
 
 #include "game/game_state.h"
+#include "game/map.h"
 #include "platform/socket.h"
 
 enum ClientState {
@@ -9,6 +10,10 @@ enum ClientState {
   CLIENT_CONNECTED,
   CLIENT_REJECTED,
 };
+
+// Ring of sent inputs kept for prediction replay; must comfortably exceed the
+// worst pending window (RTT in ticks) we are willing to predict across.
+constexpr int CLIENT_INPUT_RING = 128;
 
 struct Client {
   UdpSocket sock;
@@ -25,6 +30,14 @@ struct Client {
   uint32_t next_input_seq;
   uint32_t last_seen_event_id;
   double last_recv_time, connect_start_time, last_hello_time;
+  double net_now;
+  double next_input_send_time;
+  uint8_t pending_buttons;
+  uint8_t pending_weapon_switch;
+  uint8_t pending_class_switch;
+  PlayerInput sent_inputs[CLIENT_INPUT_RING];
+  Map prediction_map;
+  bool prediction_ready;
 };
 
 bool client_start(Client& c, NetAddress server, const char* player_name);

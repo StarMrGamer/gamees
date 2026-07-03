@@ -1,6 +1,7 @@
 #include "client/client.h"
 
 #include "core/log.h"
+#include "game/movement.h"
 #include "game/snapshot.h"
 #include "game/tuning.h"
 #include "net/protocol.h"
@@ -35,14 +36,7 @@ bool client_start(Client& c, NetAddress server, const char* player_name) {
   return true;
 }
 
-void client_send_input(Client& c, const PlayerInput& in) {
-  if (c.state != CLIENT_CONNECTED && c.state != CLIENT_CONNECTING) return;
-  PlayerInput cmd = in;
-  cmd.sequence = c.next_input_seq++;
-  c.input_history[2] = c.input_history[1];
-  c.input_history[1] = c.input_history[0];
-  c.input_history[0] = cmd;
-
+static void send_input_packet(Client& c) {
   uint8_t buf[MAX_PACKET];
   NetWriter w;
   nw_init(w, buf, sizeof(buf));
@@ -62,6 +56,43 @@ void client_send_input(Client& c, const PlayerInput& in) {
   if (!w.overflow) udp_send(c.sock, c.server_addr, buf, w.len);
 }
 
+// Called once per render frame at any frame rate; sends inputs at TICK_RATE so
+// each sent input corresponds to one server tick (and one prediction step).
+// Button taps between sends accumulate in pending_buttons so they can't be lost.
+void client_send_input(Client& c, const PlayerInput& in) {
+  if (c.state != CLIENT_CONNECTED && c.state != CLIENT_CONNECTING) return;
+  c.pending_buttons |= in.buttons;
+  if (in.weapon_switch != 0) c.pending_weapon_switch = in.weapon_switch;
+  if (in.class_switch != 0) c.pending_class_switch = in.class_switch;
+
+  constexpr double SEND_INTERVAL = 1.0 / TICK_RATE;
+  double now = c.net_now;
+  if (c.next_input_send_time <= 0.0) c.next_input_send_time = now;
+  // A slow frame may cover several ticks: send one input per covered tick
+  // (capped) so the server doesn't starve and prediction stays 1:1 with ticks.
+  int sends = 0;
+  while (now >= c.next_input_send_time && sends < 4) {
+    PlayerInput cmd{};
+    cmd.sequence = c.next_input_seq++;
+    cmd.buttons = c.pending_buttons;
+    cmd.weapon_switch = c.pending_weapon_switch;
+    cmd.class_switch = c.pending_class_switch;
+    cmd.yaw = in.yaw;
+    cmd.pitch = in.pitch;
+    c.input_history[2] = c.input_history[1];
+    c.input_history[1] = c.input_history[0];
+    c.input_history[0] = cmd;
+    c.sent_inputs[cmd.sequence % CLIENT_INPUT_RING] = cmd;
+    send_input_packet(c);
+    c.pending_buttons = in.buttons;
+    c.pending_weapon_switch = 0;
+    c.pending_class_switch = 0;
+    c.next_input_send_time += SEND_INTERVAL;
+    ++sends;
+  }
+  if (now - c.next_input_send_time > 4.0 * SEND_INTERVAL) c.next_input_send_time = now;
+}
+
 static void add_new_events(Client& c, const GameState& s, ClientEvents* out) {
   if (!out) return;
   for (int i = 0; i < MAX_EVENTS; ++i) {
@@ -72,9 +103,26 @@ static void add_new_events(Client& c, const GameState& s, ClientEvents* out) {
   }
 }
 
+// Prediction needs local collision geometry. The map file is looked up by the
+// server-announced map name under maps/; if it's missing or names a different
+// map, prediction is disabled and the client falls back to rendering raw
+// server state for the local player.
+static void load_prediction_map(Client& c) {
+  char path[64];
+  std::snprintf(path, sizeof(path), "maps/%s.txt", c.map_name);
+  c.prediction_ready = map_load(path, &c.prediction_map) &&
+                       std::strcmp(c.prediction_map.name, c.map_name) == 0;
+  if (c.prediction_ready) {
+    log_info("movement prediction enabled (map '%s')", c.map_name);
+  } else {
+    log_warn("movement prediction disabled: no matching local map for '%s'", c.map_name);
+  }
+}
+
 void client_receive(Client& c, double now, ClientEvents* new_events) {
   if (new_events) new_events->count = 0;
   if (!c.sock.valid) return;
+  c.net_now = now;
 
   if (c.state == CLIENT_CONNECTING) {
     if (c.connect_start_time <= 0.0) c.connect_start_time = now;
@@ -99,13 +147,16 @@ void client_receive(Client& c, double now, ClientEvents* new_events) {
       c.player_index = nr_u8(r);
       (void)nr_u8(r);
       nr_string(r, c.map_name, sizeof(c.map_name));
-      if (!r.error) c.state = CLIENT_CONNECTED;
+      if (!r.error && c.state != CLIENT_CONNECTED) {
+        c.state = CLIENT_CONNECTED;
+        load_prediction_map(c);
+      }
     } else if (type == PKT_SV_REJECT) {
       nr_string(r, c.reject_reason, sizeof(c.reject_reason));
       c.state = CLIENT_REJECTED;
     } else if (type == PKT_SV_SNAPSHOT) {
       GameState next{};
-      if (snapshot_read(next, r)) {
+      if (snapshot_read(next, r) && next.tick > c.snap_b.tick) {
         c.snap_a = c.snap_b;
         c.snap_b = next;
         c.have_two_snaps = c.snap_a.tick != 0;
@@ -126,16 +177,42 @@ void client_receive(Client& c, double now, ClientEvents* new_events) {
   }
 }
 
+// Re-run the shared movement sim over inputs the server hasn't acknowledged
+// yet, starting from the newest snapshot. Because snapshots replicate every
+// field player_move() reads and the server consumes one input per tick, the
+// replayed result matches the server's future state exactly under no loss.
+static bool predict_local_player(const Client& c, Player* out) {
+  const Player& base = c.snap_b.players[c.player_index];
+  if (!c.prediction_ready || !base.active || !base.alive || c.snap_b.match_over) return false;
+  uint32_t acked = base.last_input_seq;
+  uint32_t newest = c.next_input_seq - 1;
+  if (newest <= acked) return false;
+  if (newest - acked > CLIENT_INPUT_RING - 8) return false;
+  Player p = base;
+  for (uint32_t seq = acked + 1; seq <= newest; ++seq) {
+    const PlayerInput& cmd = c.sent_inputs[seq % CLIENT_INPUT_RING];
+    if (cmd.sequence != seq) return false;
+    player_move(p, cmd, c.prediction_map, TICK_DT);
+  }
+  *out = p;
+  return true;
+}
+
 void client_view_state(const Client& c, double now, GameState* out) {
   if (!out) return;
   if (!c.have_two_snaps) {
     *out = c.snap_b;
-    return;
+  } else {
+    // Render remote entities one snapshot interval behind: blend from snap_a
+    // to snap_b over the interval following snap_b's arrival.
+    float t = static_cast<float>((now - c.snap_b_recv_time) * TICK_RATE);
+    snapshot_interpolate(c.snap_a, c.snap_b, t, *out);
   }
-  float t = static_cast<float>((now - c.snap_b_recv_time) * TICK_RATE + 1.0);
-  snapshot_interpolate(c.snap_a, c.snap_b, t, *out);
-  if (c.player_index >= 0 && c.player_index < MAX_PLAYERS) {
-    out->players[c.player_index] = c.snap_b.players[c.player_index];
+  if (c.player_index < 0 || c.player_index >= MAX_PLAYERS) return;
+  out->players[c.player_index] = c.snap_b.players[c.player_index];
+  Player predicted{};
+  if (predict_local_player(c, &predicted)) {
+    out->players[c.player_index] = predicted;
   }
 }
 
