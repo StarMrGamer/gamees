@@ -44,3 +44,14 @@ Sensitivity and jump bind are saved to `arena.cfg` when changed in settings or
 when the client exits. Set `ARENA_CONFIG=/path/to/file.cfg` to use a different
 config file. Command-line `--sensitivity` and `--jump` override the saved values
 for that launch and are saved when the client exits.
+
+## Netcode
+
+The server stays fully authoritative, but the client now predicts the local
+player's movement: unacknowledged inputs are replayed through the shared
+simulation on top of each snapshot, so movement and bunny hopping feel
+instant regardless of latency. Remote players interpolate one snapshot
+interval behind. Prediction needs the server's map available locally at
+`maps/<name>.txt` (logged at connect); without it the client falls back to
+rendering raw server state. Protocol version 4 — older builds cannot
+interoperate.

@@ -15,7 +15,8 @@ struct Sound {
 struct Voice {
   bool active;
   int sound_id;
-  int cursor;
+  float cursor;
+  float rate;
   float left_gain;
   float right_gain;
   uint32_t started;
@@ -30,6 +31,7 @@ struct Mixer {
   Vec3 listener_pos;
   float listener_yaw;
   uint32_t voice_clock;
+  uint32_t pitch_rng;
   bool enabled;
   bool owns_audio_subsystem;
 };

@@ -21,17 +21,20 @@ static void mix_chunk(Mixer& m, float* out, int frames) {
     if (!v.active || v.sound_id < 0 || v.sound_id >= 32) continue;
 
     const Sound& s = m.sounds[v.sound_id];
-    if (s.samples.empty() || v.cursor >= static_cast<int>(s.samples.size())) {
+    int sample_count = static_cast<int>(s.samples.size());
+    if (sample_count == 0 || v.cursor >= static_cast<float>(sample_count)) {
       v.active = false;
       continue;
     }
 
     for (int i = 0; i < frames; ++i) {
-      if (v.cursor >= static_cast<int>(s.samples.size())) {
+      int idx = static_cast<int>(v.cursor);
+      if (idx >= sample_count) {
         v.active = false;
         break;
       }
-      float sample = s.samples[v.cursor++];
+      float sample = s.samples[idx];
+      v.cursor += v.rate;
       out[i * 2 + 0] += sample * v.left_gain;
       out[i * 2 + 1] += sample * v.right_gain;
     }
@@ -142,6 +145,14 @@ void audio_set_listener(Mixer& m, Vec3 pos, float yaw) {
   if (locked) audio_unlock(m);
 }
 
+// Small random playback-rate spread so repeated plays of the same synthesized
+// buffer (every rifle shot is byte-identical) don't sound machine-stamped.
+static float pitch_variation(Mixer& m) {
+  m.pitch_rng = m.pitch_rng * 1664525u + 1013904223u;
+  float unit = static_cast<float>((m.pitch_rng >> 8) & 0xffff) / 65535.0f;
+  return 0.94f + unit * 0.12f;
+}
+
 static void add_voice(Mixer& m, int sound_id, float left_gain, float right_gain) {
   if (!m.enabled || sound_id < 0 || sound_id >= 32 || m.sounds[sound_id].samples.empty()) return;
   int slot = -1;
@@ -160,7 +171,8 @@ static void add_voice(Mixer& m, int sound_id, float left_gain, float right_gain)
   Voice& v = m.voices[slot];
   v.active = true;
   v.sound_id = sound_id;
-  v.cursor = 0;
+  v.cursor = 0.0f;
+  v.rate = pitch_variation(m);
   v.left_gain = clampf(left_gain, 0.0f, 2.0f);
   v.right_gain = clampf(right_gain, 0.0f, 2.0f);
   v.started = ++m.voice_clock;

@@ -229,3 +229,16 @@ thread).
 6. **Game feel** — audio synth + mixer, particles, HUD, scoreboard, kill feed, menu.
 7. **Ship** — dedicated mode polish, bots, tests green, Windows cross-build verified,
    README.
+
+## Amendments
+
+**2026-07-03** — Client-side movement prediction, originally a v1 non-goal,
+is now implemented. Snapshots replicate all movement-internal player state,
+the server consumes one queued input per tick per client (matching the
+client's paced 60 Hz input sends), and the client replays unacknowledged
+inputs through the shared `player_move` — reconciling against every
+snapshot. Remote-player interpolation renders one snapshot interval behind
+as originally specified. Protocol is v4 with a 4 KB packet cap. The event
+ring grew to 64 entries and snapshots carry the 16 newest events. Movement
+sounds (jump, dash, slide, and a new landing thud) are reported by the
+simulation itself via `Player::move_sound`.
