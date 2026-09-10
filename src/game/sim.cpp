@@ -130,7 +130,8 @@ static void respawn_player(GameState& s, const Map& map, int i, Rng& rng) {
   push_event(s, EV_SOUND, SND_RESPAWN, static_cast<uint8_t>(i), p.pos);
 }
 
-void game_tick(GameState& s, const Map& map, const PlayerInput inputs[MAX_PLAYERS], Rng& rng) {
+void game_tick(GameState& s, const Map& map, const PlayerInput inputs[MAX_PLAYERS], Rng& rng,
+               const History* history) {
   s.tick += 1;
 
   if (s.match_over) {
@@ -178,12 +179,22 @@ void game_tick(GameState& s, const Map& map, const PlayerInput inputs[MAX_PLAYER
     if (in.weapon_switch == 2) p.weapon = WEAPON_ROCKET;
     if (in.sequence >= p.last_input_seq) p.last_input_seq = in.sequence;
 
+    // Lag compensation: rewind remote players to the tick the shooter's view
+    // was showing when it sampled this input. The shooter's own hull is never
+    // rewound, and damage still lands on the live player state.
+    const PlayerPose* rewind = nullptr;
+    PlayerPose rewound[MAX_PLAYERS];
+    if (history && in.view_tick != 0 &&
+        history_lookup(*history, in.view_tick, LAG_COMP_MAX_REWIND, rewound)) {
+      rewind = rewound;
+    }
+
     player_move(p, in, map, TICK_DT);
     if (p.move_sound != 0) {
       push_event(s, EV_SOUND, p.move_sound, static_cast<uint8_t>(i), p.pos);
     }
     if (in.buttons & BTN_FIRE) {
-      weapon_fire(s, map, i);
+      weapon_fire(s, map, i, rewind);
     }
 
     for (int k = 0; k < s.pickup_count; ++k) {

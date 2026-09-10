@@ -120,6 +120,7 @@ static void handle_input(Server& sv, int slot_index, NetReader& r) {
     in.class_switch = nr_u8(r);
     in.yaw = nr_f32(r);
     in.pitch = nr_f32(r);
+    in.view_tick = nr_u32(r);
     if (r.error) return;
     if (!player_input_sane(in)) continue;
     queue_input(slot, in);
@@ -188,7 +189,9 @@ void server_tick(Server& sv) {
     int p = slot.player_index;
     if (p >= 0 && p < MAX_PLAYERS) inputs[p] = in;
   }
-  game_tick(sv.state, sv.map, inputs, sv.rng);
+  game_tick(sv.state, sv.map, inputs, sv.rng, &sv.history);
+  // Record the post-tick poses for the next window of lag compensation.
+  history_record(sv.history, sv.state);
 }
 
 void server_broadcast(Server& sv) {

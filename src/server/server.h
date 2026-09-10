@@ -2,6 +2,7 @@
 
 #include "core/rng.h"
 #include "game/game_state.h"
+#include "game/history.h"
 #include "game/map.h"
 #include "platform/socket.h"
 
@@ -23,6 +24,7 @@ struct Server {
   ClientSlot clients[MAX_PLAYERS];
   Rng rng;
   double now;
+  History history;
 };
 
 bool server_init(Server& sv, uint16_t port, const char* map_path, int frag_limit);

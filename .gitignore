@@ -10,3 +10,11 @@
 *.ilk
 *.user
 *.log
+
+# Windows cross-build tree and packaged releases
+/build-win/
+/build-win.zip
+/dist/
+
+# Local client config, written by the game at runtime
+/arena.cfg

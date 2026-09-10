@@ -310,3 +310,40 @@ TEST(arena_spawns_face_movable_space) {
     CHECK(end_center_dist < start_center_dist - 1.0f);
   }
 }
+
+TEST(player_walks_up_a_ramp) {
+  Map map{};
+  // Slope rising from y=0 at x=-10 to y=5 at x=10.
+  map.ramps[map.ramp_count++] = {{-10.0f, 0.0f, -5.0f}, {10.0f, 5.0f, 5.0f}, {0.5f, 0.5f, 0.5f}, 0};
+  map.spawns[0] = {-9.0f, 0.0f, 0.0f};
+  map.spawn_count = 1;
+
+  Player p = movement_player({-9.0f, 0.0f, 0.0f}, true);
+  PlayerInput in{};
+  in.buttons = BTN_FORWARD;
+  in.yaw = PI * 0.5f;  // face +x, up the ramp
+  for (int tick = 0; tick < 30; ++tick) player_move(p, in, map, TICK_DT);
+
+  CHECK(p.pos.y > 0.5f);   // climbed the slope
+  CHECK(p.pos.x > -6.0f);  // made forward progress
+  CHECK(p.on_ground);
+}
+
+TEST(player_falling_into_the_void_is_teleported_to_spawn) {
+  Map map{};
+  map.void_y = -10.0f;
+  map.spawns[0] = {3.0f, 0.0f, 4.0f};
+  map.spawn_count = 1;
+
+  Player p = movement_player({0.0f, -20.0f, 0.0f}, false);
+  p.vel = {5.0f, -10.0f, 2.0f};
+  PlayerInput in{};
+  player_move(p, in, map, TICK_DT);
+
+  CHECK_NEAR(p.pos.x, 3.0f, 0.001f);
+  CHECK_NEAR(p.pos.y, 0.0f, 0.001f);
+  CHECK_NEAR(p.pos.z, 4.0f, 0.001f);
+  CHECK_NEAR(p.vel.x, 0.0f, 0.001f);
+  CHECK_NEAR(p.vel.y, 0.0f, 0.001f);
+  CHECK_NEAR(p.vel.z, 0.0f, 0.001f);
+}

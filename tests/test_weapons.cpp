@@ -1,6 +1,7 @@
 #include "test_harness.h"
 
 #include "game/collision.h"
+#include "game/history.h"
 #include "game/sim.h"
 #include "game/tuning.h"
 #include "game/weapons.h"
@@ -43,6 +44,37 @@ TEST(rifle_hits_far_target_immediately) {
   weapon_fire(s, map, a);
   CHECK_NEAR(s.players[b].health, 100.0f - RIFLE_DAMAGE, 0.0001f);
   CHECK_EQ_INT(s.rockets[0].active ? 1 : 0, 0);
+}
+
+TEST(lag_compensation_rewinds_target_to_view_tick) {
+  Map map = weapons_map();
+  GameState s{};
+  game_init(s, map, 20);
+  int a = game_player_join(s, map, "a");
+  int b = game_player_join(s, map, "b");
+  s.players[a].pos = {0, 0, 0};
+  s.players[a].yaw = 0.0f;
+  s.players[a].pitch = 0.0f;
+  s.players[b].health = 100.0f;
+
+  // At the client's view tick the target stood squarely on the aim line.
+  s.players[b].pos = {0, 0, -5};
+  History h{};
+  s.tick = 10;
+  history_record(h, s);
+
+  // By the time the shot is simulated the target has strafed far off the line,
+  // so live hit detection misses.
+  s.players[b].pos = {20, 0, -5};
+  weapon_fire(s, map, a);
+  CHECK_NEAR(s.players[b].health, 100.0f, 0.0001f);
+
+  // Rewinding to the view tick restores the hit the shooter actually saw.
+  PlayerPose rewound[MAX_PLAYERS];
+  CHECK(history_lookup(h, 10, LAG_COMP_MAX_REWIND, rewound));
+  s.players[a].fire_cooldown = 0.0f;
+  weapon_fire(s, map, a, rewound);
+  CHECK_NEAR(s.players[b].health, 100.0f - RIFLE_DAMAGE, 0.0001f);
 }
 
 TEST(shot_converges_to_crosshair_from_offset_muzzle) {

@@ -64,14 +64,9 @@ static uint8_t cycle_airjump_bind(uint8_t bind, int dir) {
   return static_cast<uint8_t>(v);
 }
 
-static bool airjump_input_active(const ClientSettings& settings, const bool* keys,
-                                 float wheel_y, bool jump_active) {
-  switch (settings.airjump_bind) {
-    case AIRJUMP_BIND_SPACE: return keys[SDL_SCANCODE_SPACE];
-    case AIRJUMP_BIND_MWHEEL_UP: return wheel_y > 0.0f;
-    case AIRJUMP_BIND_MWHEEL_DOWN: return wheel_y < 0.0f;
-    default: return jump_active;  // AIRJUMP_BIND_JUMP: mirror the jump button
-  }
+static bool airjump_input_active(const ClientSettings& settings, const bool* keys, float wheel_y) {
+  return airjump_bind_pressed(settings.airjump_bind, keys[SDL_SCANCODE_LALT],
+                              keys[SDL_SCANCODE_SPACE], wheel_y);
 }
 
 static void set_mouse_capture(SDL_Window* window, bool capture) {
@@ -306,6 +301,15 @@ static void draw_status_hud(Hud& hud, int w, int h, const Client& client, const 
   std::snprintf(fps_text, sizeof(fps_text), "FPS %.0f", fps);
   hud_text_shadow(hud, static_cast<float>(w) - hud_text_width(fps_text, 1.0f) - 18.0f,
                   18.0f, 1.0f, {0.74f, 0.92f, 0.86f}, "%s", fps_text);
+  // Hold P to show your position - handy for reporting map problems.
+  const bool* keys = SDL_GetKeyboardState(nullptr);
+  if (keys[SDL_SCANCODE_P] && client.player_index >= 0 && client.player_index < MAX_PLAYERS) {
+    const Player& lp = view.players[client.player_index];
+    char pos_text[64];
+    std::snprintf(pos_text, sizeof(pos_text), "X %.1f  Y %.1f  Z %.1f", lp.pos.x, lp.pos.y, lp.pos.z);
+    hud_text_shadow(hud, static_cast<float>(w) - hud_text_width(pos_text, 1.0f) - 18.0f,
+                    42.0f, 1.0f, {0.95f, 0.92f, 0.66f}, "%s", pos_text);
+  }
   for (int i = 0; i < 4; ++i) {
     if (feed[i].time_left > 0.0f) {
       hud_text_shadow(hud, 24.0f, 24.0f + static_cast<float>(i) * 22.0f, 1.0f,
@@ -380,8 +384,7 @@ static void draw_status_hud(Hud& hud, int w, int h, const Client& client, const 
   }
 }
 
-static bool world_to_screen(const Renderer& renderer, Vec3 pos, int w, int h, float* sx, float* sy) {
-  Mat4 view_proj = mat4_mul(renderer.proj, renderer.view);
+static bool world_to_screen(const Mat4& view_proj, Vec3 pos, int w, int h, float* sx, float* sy) {
   float clip_x = view_proj.m[0] * pos.x + view_proj.m[4] * pos.y +
                  view_proj.m[8] * pos.z + view_proj.m[12];
   float clip_y = view_proj.m[1] * pos.x + view_proj.m[5] * pos.y +
@@ -407,6 +410,8 @@ static bool world_to_screen(const Renderer& renderer, Vec3 pos, int w, int h, fl
 
 static void draw_enemy_health_bars(Hud& hud, const Renderer& renderer, const GameState& view,
                                    int local_index, int w, int h) {
+  // One projection per frame rather than one per player.
+  const Mat4& view_proj = renderer.view_proj;
   for (int i = 0; i < MAX_PLAYERS; ++i) {
     const Player& p = view.players[i];
     if (!p.active || !p.alive || i == local_index) continue;
@@ -415,7 +420,7 @@ static void draw_enemy_health_bars(Hud& hud, const Renderer& renderer, const Gam
     Vec3 anchor = p.pos + Vec3{0.0f, body_h + 0.52f, 0.0f};
     float sx = 0.0f;
     float sy = 0.0f;
-    if (!world_to_screen(renderer, anchor, w, h, &sx, &sy)) continue;
+    if (!world_to_screen(view_proj, anchor, w, h, &sx, &sy)) continue;
 
     float dist = vec3_length(p.pos - renderer.camera.pos);
     float bar_w = clampf(84.0f - dist * 1.1f, 42.0f, 84.0f);
@@ -449,9 +454,8 @@ static PlayerInput sample_input(uint8_t weapon_switch, uint8_t class_switch, con
   if (keys[SDL_SCANCODE_S]) in.buttons |= BTN_BACK;
   if (keys[SDL_SCANCODE_A]) in.buttons |= BTN_LEFT;
   if (keys[SDL_SCANCODE_D]) in.buttons |= BTN_RIGHT;
-  bool jump_active = jump_input_active(settings, keys, wheel_y);
-  if (jump_active) in.buttons |= BTN_JUMP;
-  if (airjump_input_active(settings, keys, wheel_y, jump_active)) in.buttons |= BTN_AIRJUMP;
+  if (jump_input_active(settings, keys, wheel_y)) in.buttons |= BTN_JUMP;
+  if (airjump_input_active(settings, keys, wheel_y)) in.buttons |= BTN_AIRJUMP;
   if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_C]) in.buttons |= BTN_CROUCH;
   if (keys[SDL_SCANCODE_LSHIFT]) in.buttons |= BTN_DASH;
   if (keys[SDL_SCANCODE_F] || (mouse_buttons & SDL_BUTTON_LMASK)) in.buttons |= BTN_FIRE;
@@ -688,8 +692,8 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     }
     client_send_input(client, in);
 
-    GameState view{};
-    client_view_state(client, now, &view);
+    GameState view;
+    client_view_state(client, &view);
     if (client.player_index >= 0 && client.player_index < MAX_PLAYERS &&
         view.players[client.player_index].active) {
       const Player& local = view.players[client.player_index];
@@ -745,33 +749,37 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     SDL_GetWindowSizeInPixels(window, &w, &h);
     renderer_begin_frame(renderer, cam, w, h, map);
     renderer_draw_world(renderer);
+    // Every transient box — players, rockets, pickups and all particles — goes
+    // into one pre-transformed batch and is drawn in a single call.
+    renderer_begin_boxes(renderer);
     for (int i = 0; i < MAX_PLAYERS; ++i) {
       const Player& p = view.players[i];
       if (!p.active || !p.alive) continue;
       if (i == client.player_index) continue;
       float body_h = p.crouching ? PLAYER_CROUCH_HEIGHT : PLAYER_HEIGHT;
       Vec3 body_color = player_color(i) * player_class_tint(p.player_class);
-      renderer_draw_box(renderer, p.pos + Vec3{0.0f, body_h * 0.5f, 0.0f},
-                        {PLAYER_HALF_W * 2.0f, body_h, PLAYER_HALF_W * 2.0f},
-                        body_color, p.yaw);
-      renderer_draw_box(renderer, p.pos + Vec3{0.0f, body_h + 0.18f, 0.0f},
-                        {0.36f, 0.36f, 0.36f}, body_color * 1.15f, p.yaw);
+      renderer_queue_box(renderer, p.pos + Vec3{0.0f, body_h * 0.5f, 0.0f},
+                         {PLAYER_HALF_W * 2.0f, body_h, PLAYER_HALF_W * 2.0f},
+                         body_color, p.yaw);
+      renderer_queue_box(renderer, p.pos + Vec3{0.0f, body_h + 0.18f, 0.0f},
+                         {0.36f, 0.36f, 0.36f}, body_color * 1.15f, p.yaw);
     }
     for (int i = 0; i < MAX_ROCKETS; ++i) {
       const Rocket& r = view.rockets[i];
       if (r.active) {
         particles_trail(particles, fx_rng, r.pos);
-        renderer_draw_box(renderer, r.pos, {0.18f, 0.18f, 0.55f}, {1.0f, 0.46f, 0.10f}, 0.0f);
+        renderer_queue_box(renderer, r.pos, {0.18f, 0.18f, 0.55f}, {1.0f, 0.46f, 0.10f}, 0.0f);
       }
     }
     for (int i = 0; i < view.pickup_count; ++i) {
       const Pickup& p = view.pickups[i];
       if (!p.present) continue;
       Vec3 c = p.pos + Vec3{0.0f, 0.45f, 0.0f};
-      renderer_draw_box(renderer, c, {0.70f, 0.18f, 0.18f}, {0.18f, 1.00f, 0.35f}, 0.0f);
-      renderer_draw_box(renderer, c, {0.18f, 0.70f, 0.18f}, {0.18f, 1.00f, 0.35f}, 0.0f);
+      renderer_queue_box(renderer, c, {0.70f, 0.18f, 0.18f}, {0.18f, 1.00f, 0.35f}, 0.0f);
+      renderer_queue_box(renderer, c, {0.18f, 0.70f, 0.18f}, {0.18f, 1.00f, 0.35f}, 0.0f);
     }
     particles_render(particles, renderer, cam);
+    renderer_flush_boxes(renderer);
     uint8_t local_weapon = WEAPON_RIFLE;
     uint8_t local_class = player_class_from_switch(selected_class);
     if (client.player_index >= 0 && client.player_index < MAX_PLAYERS &&

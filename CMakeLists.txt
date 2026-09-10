@@ -27,12 +27,15 @@ set(ARENA_SOURCES
   src/client/menu.cpp
   src/core/log.cpp
   src/game/collision.cpp
+  src/game/history.cpp
   src/game/map.cpp
+  src/game/map_check.cpp
   src/game/movement.cpp
   src/game/sim.cpp
   src/game/snapshot.cpp
   src/game/weapons.cpp
   src/net/protocol.cpp
+  src/platform/paths.cpp
   src/platform/socket.cpp
   src/render/gl_loader.cpp
   src/render/hud.cpp
@@ -42,6 +45,9 @@ set(ARENA_SOURCES
   src/render/shader.cpp
   src/server/dedicated.cpp
   src/server/server.cpp
+  src/tools/bench.cpp
+  src/tools/headless.cpp
+  src/tools/map_import.cpp
 )
 
 add_executable(arena src/main.cpp ${ARENA_SOURCES})
@@ -51,8 +57,11 @@ target_link_libraries(arena PRIVATE SDL3::SDL3)
 add_executable(arena_tests
   tests/test_client.cpp
   tests/test_collision.cpp
+  tests/test_grid.cpp
+  tests/test_history.cpp
   tests/test_main.cpp
   tests/test_map.cpp
+  tests/test_map_import.cpp
   tests/test_math.cpp
   tests/test_audio.cpp
   tests/test_config.cpp

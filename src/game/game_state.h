@@ -63,6 +63,10 @@ struct PlayerInput {
   uint8_t weapon_switch;
   uint8_t class_switch;
   float yaw, pitch;
+  // Server tick the client's view was rendering when this input was sampled.
+  // The server rewinds remote hit boxes to this tick for lag compensation.
+  // Zero means "unknown", disabling rewind for the input.
+  uint32_t view_tick;
 };
 
 inline bool player_input_sane(const PlayerInput& in) {

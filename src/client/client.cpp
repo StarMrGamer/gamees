@@ -52,6 +52,7 @@ static void send_input_packet(Client& c) {
     nw_u8(w, h.class_switch);
     nw_f32(w, h.yaw);
     nw_f32(w, h.pitch);
+    nw_u32(w, h.view_tick);
   }
   if (!w.overflow) udp_send(c.sock, c.server_addr, buf, w.len);
 }
@@ -71,6 +72,7 @@ void client_send_input(Client& c, const PlayerInput& in) {
   // A slow frame may cover several ticks: send one input per covered tick
   // (capped) so the server doesn't starve and prediction stays 1:1 with ticks.
   int sends = 0;
+  uint32_t view_tick = client_view_tick(c);
   while (now >= c.next_input_send_time && sends < 4) {
     PlayerInput cmd{};
     cmd.sequence = c.next_input_seq++;
@@ -79,6 +81,7 @@ void client_send_input(Client& c, const PlayerInput& in) {
     cmd.class_switch = c.pending_class_switch;
     cmd.yaw = in.yaw;
     cmd.pitch = in.pitch;
+    cmd.view_tick = view_tick;
     c.input_history[2] = c.input_history[1];
     c.input_history[1] = c.input_history[0];
     c.input_history[0] = cmd;
@@ -155,12 +158,15 @@ void client_receive(Client& c, double now, ClientEvents* new_events) {
       nr_string(r, c.reject_reason, sizeof(c.reject_reason));
       c.state = CLIENT_REJECTED;
     } else if (type == PKT_SV_SNAPSHOT) {
-      GameState next{};
-      if (snapshot_read(next, r) && next.tick > c.snap_b.tick) {
-        c.snap_a = c.snap_b;
+      // snapshot_read() zeroes the whole structure itself; no need to
+      // value-initialise ~6 KB here first.
+      GameState next;
+      if (snapshot_read(next, r) && next.tick > c.newest_snap_tick) {
+        SnapshotSlot& slot = c.snaps[next.tick % CLIENT_SNAP_RING];
+        slot.tick = next.tick;
+        slot.state = next;
         c.snap_b = next;
-        c.have_two_snaps = c.snap_a.tick != 0;
-        c.snap_b_recv_time = now;
+        c.newest_snap_tick = next.tick;
         add_new_events(c, next, new_events);
       }
     } else if (type == PKT_SV_SHUTDOWN) {
@@ -174,6 +180,47 @@ void client_receive(Client& c, double now, ClientEvents* new_events) {
   } else if (c.state == CLIENT_CONNECTED &&
              c.last_recv_time > 0.0 && now - c.last_recv_time > CLIENT_TIMEOUT) {
     c.state = CLIENT_DISCONNECTED;
+  }
+
+  // Advance the jitter-buffered render clock. It tracks real time and is only
+  // clamped when it would outrun the newest snapshot (packet loss) or fall
+  // further behind than the snapshot ring can bracket. This keeps remote
+  // entities smooth even when snapshots arrive irregularly.
+  if (c.newest_snap_tick != 0) {
+    if (!c.render_clock_init) {
+      c.render_tick = static_cast<float>(c.newest_snap_tick) - INTERP_TARGET_DELAY_TICKS;
+      c.render_clock_init = true;
+      c.last_view_time = now;
+    } else {
+      double dt = now - c.last_view_time;
+      if (dt < 0.0) dt = 0.0;
+      if (dt > 0.25) dt = 0.25;
+      c.last_view_time = now;
+
+      // The clock runs at real time, but is nudged a few percent fast or slow
+      // to converge on sitting INTERP_TARGET_DELAY_TICKS behind the newest
+      // snapshot. Without this the buffer is a one-shot: the first stall
+      // pushes the clock up against the max clamp and it never drifts back,
+      // so every later late packet stutters. The correction is small enough
+      // not to be visible as a speed change.
+      // The error is measured against where the clock is *about* to be, not
+      // where it was. Measuring pre-advance biases the steady state a full
+      // tick early, because the newest tick has already moved on by then.
+      float newest = static_cast<float>(c.newest_snap_tick);
+      float advance = static_cast<float>(dt * TICK_RATE);
+      float error = (newest - INTERP_TARGET_DELAY_TICKS) - (c.render_tick + advance);
+      float rate = 1.0f + clampf(error * INTERP_CLOCK_GAIN, -INTERP_CLOCK_MAX_ADJUST,
+                                 INTERP_CLOCK_MAX_ADJUST);
+      c.render_tick += advance * rate;
+
+      // Hard limits, only reached when the drift correction cannot keep up:
+      // never render past what has arrived, and never fall so far behind that
+      // the snapshot ring no longer brackets the render tick.
+      float max_tick = newest - INTERP_MIN_RENDER_DELAY;
+      float min_tick = newest - static_cast<float>(CLIENT_SNAP_RING - 2);
+      if (c.render_tick > max_tick) c.render_tick = max_tick;
+      if (c.render_tick < min_tick) c.render_tick = min_tick;
+    }
   }
 }
 
@@ -198,15 +245,47 @@ static bool predict_local_player(const Client& c, Player* out) {
   return true;
 }
 
-void client_view_state(const Client& c, double now, GameState* out) {
+uint32_t client_view_tick(const Client& c) {
+  if (!c.render_clock_init || c.render_tick <= 0.0f) return c.newest_snap_tick;
+  return static_cast<uint32_t>(c.render_tick + 0.5f);
+}
+
+void client_view_state(const Client& c, GameState* out) {
   if (!out) return;
-  if (!c.have_two_snaps) {
+  if (c.newest_snap_tick == 0 || !c.render_clock_init) {
     *out = c.snap_b;
   } else {
-    // Render remote entities one snapshot interval behind: blend from snap_a
-    // to snap_b over the interval following snap_b's arrival.
-    float t = static_cast<float>((now - c.snap_b_recv_time) * TICK_RATE);
-    snapshot_interpolate(c.snap_a, c.snap_b, t, *out);
+    // Interpolate remote entities between the two snapshots that bracket the
+    // render clock. The clock is decoupled from packet arrival, so this stays
+    // smooth under jitter and tolerates a few dropped or reordered snapshots.
+    const GameState* a = nullptr;
+    const GameState* b = nullptr;
+    float at = 0.0f;
+    float bt = 0.0f;
+    for (int i = 0; i < CLIENT_SNAP_RING; ++i) {
+      const SnapshotSlot& slot = c.snaps[i];
+      if (slot.tick == 0) continue;
+      float t = static_cast<float>(slot.tick);
+      if (t <= c.render_tick && (!a || t > at)) {
+        a = &slot.state;
+        at = t;
+      }
+      if (t >= c.render_tick && (!b || t < bt)) {
+        b = &slot.state;
+        bt = t;
+      }
+    }
+    if (a && b && a != b) {
+      float span = bt - at;
+      float frac = span > 0.0001f ? (c.render_tick - at) / span : 0.0f;
+      snapshot_interpolate(*a, *b, frac, *out);
+    } else if (b) {
+      *out = *b;
+    } else if (a) {
+      *out = *a;
+    } else {
+      *out = c.snap_b;
+    }
   }
   if (c.player_index < 0 || c.player_index >= MAX_PLAYERS) return;
   out->players[c.player_index] = c.snap_b.players[c.player_index];

@@ -38,6 +38,37 @@ TEST(client_config_roundtrips_sensitivity_and_jump_bind) {
   set_config_env(nullptr);
 }
 
+TEST(double_jump_bind_never_mirrors_jump) {
+  // Regression: the double jump used to default to "same as jump", so pressing
+  // the normal jump button twice fired a double jump. It must only ever fire
+  // from its own bind.
+  ClientSettings s{};
+  CHECK_EQ_INT(s.jump_bind, JUMP_BIND_SPACE);
+  CHECK_EQ_INT(s.airjump_bind, AIRJUMP_BIND_LALT);
+  CHECK(airjump_bind_pressed(s.airjump_bind, true, false, 0.0f));   // Left Alt
+  CHECK(!airjump_bind_pressed(s.airjump_bind, false, true, 0.0f));  // Space (jump) must not
+  // An explicit Space bind reacts to Space only, never the Alt default.
+  CHECK(airjump_bind_pressed(AIRJUMP_BIND_SPACE, false, true, 0.0f));
+  CHECK(!airjump_bind_pressed(AIRJUMP_BIND_SPACE, true, false, 0.0f));
+  // Wheel binds read the wheel and ignore keys.
+  CHECK(airjump_bind_pressed(AIRJUMP_BIND_MWHEEL_UP, true, true, 1.0f));
+  CHECK(!airjump_bind_pressed(AIRJUMP_BIND_MWHEEL_UP, true, true, -1.0f));
+}
+
+TEST(client_config_parses_airjump_binds) {
+  uint8_t bind = 255;
+  CHECK(client_airjump_bind_parse("lalt", &bind));
+  CHECK_EQ_INT(bind, AIRJUMP_BIND_LALT);
+  CHECK(client_airjump_bind_parse("alt", &bind));
+  CHECK_EQ_INT(bind, AIRJUMP_BIND_LALT);
+  CHECK(client_airjump_bind_parse("space", &bind));
+  CHECK_EQ_INT(bind, AIRJUMP_BIND_SPACE);
+  CHECK(client_airjump_bind_parse("mwheeldown", &bind));
+  CHECK_EQ_INT(bind, AIRJUMP_BIND_MWHEEL_DOWN);
+  CHECK(client_airjump_bind_parse("jump", &bind));  // legacy alias -> default
+  CHECK_EQ_INT(bind, AIRJUMP_BIND_LALT);
+}
+
 TEST(client_config_parses_jump_aliases) {
   uint8_t bind = JUMP_BIND_SPACE;
   CHECK(client_jump_bind_parse("mwheelup", &bind));

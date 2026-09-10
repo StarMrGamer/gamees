@@ -11,6 +11,8 @@ bool aabb_overlap(const Aabb& a, const Aabb& b);
 bool ray_aabb(Vec3 origin, Vec3 dir, const Aabb& box, float max_t, float* t_out);
 float ray_map(const Map& map, Vec3 origin, Vec3 dir, float max_t);
 bool map_box_overlap(const Map& map, const Aabb& box);
+// Highest ramp surface height at (x, z), or false if no ramp covers the point.
+bool map_ramp_surface(const Map& map, float x, float z, float* y_out);
 
 struct MoveResult {
   Vec3 pos;

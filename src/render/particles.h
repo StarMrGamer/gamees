@@ -15,7 +15,7 @@ struct Particle {
 struct ParticleSystem {
   Particle pool[MAX_PARTICLES];
   int alive;
-  Mesh dynamic;
+  int spawn_cursor;  // rotating free-slot hint; avoids rescanning from 0
 };
 
 void particles_init(ParticleSystem& ps);

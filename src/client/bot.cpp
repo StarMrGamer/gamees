@@ -26,7 +26,7 @@ int bot_main(NetAddress server, const char* name, int lifetime_seconds) {
     in.buttons = BTN_FORWARD | BTN_FIRE;
     if (static_cast<int>(now) % 4 == 0) in.buttons |= BTN_JUMP;
     if (static_cast<int>(now) % 7 == 0) in.buttons |= BTN_DASH;
-    in.weapon_switch = static_cast<int>(now) % 5 == 0 ? 2 : 0;
+    in.weapon_switch = static_cast<int>(now) % 5 == 0 ? 2 : 1;
     in.yaw = std::sin(static_cast<float>(now) * 0.7f) * PI;
     in.pitch = 0.0f;
     client_send_input(c, in);

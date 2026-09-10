@@ -3,9 +3,14 @@
 #include <cstring>
 
 static void spawn_particle(ParticleSystem& ps, Particle p) {
-  for (int i = 0; i < MAX_PARTICLES; ++i) {
+  // Bursts spawn dozens at once; scanning from the last slot instead of zero
+  // keeps this near O(1) instead of repeatedly walking the whole pool.
+  for (int n = 0; n < MAX_PARTICLES; ++n) {
+    int i = ps.spawn_cursor + n;
+    if (i >= MAX_PARTICLES) i -= MAX_PARTICLES;
     if (ps.pool[i].life <= 0.0f) {
       ps.pool[i] = p;
+      ps.spawn_cursor = i + 1 < MAX_PARTICLES ? i + 1 : 0;
       return;
     }
   }
@@ -29,11 +34,13 @@ void particles_update(ParticleSystem& ps, float dt) {
 }
 
 void particles_render(ParticleSystem& ps, Renderer& r, const Camera&) {
+  // Queue into the renderer's dynamic batch; the caller flushes them together
+  // with players/rockets/pickups in a single draw call.
   for (int i = 0; i < MAX_PARTICLES; ++i) {
     const Particle& p = ps.pool[i];
     if (p.life <= 0.0f) continue;
     float a = p.life / p.max_life;
-    renderer_draw_box(r, p.pos, {p.size, p.size, p.size}, p.color * a, 0.0f);
+    renderer_queue_box(r, p.pos, {p.size, p.size, p.size}, p.color * a, 0.0f);
   }
 }
 

@@ -233,4 +233,30 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
       if (p.move_sound == 0) p.move_sound = SND_JUMP;
     }
   }
+
+  // Void layer: below the map the player is returned to the nearest spawn with
+  // all momentum cancelled. Shared by prediction and server so both agree.
+  if (p.pos.y < map.void_y) {
+    int best = -1;
+    float best_dist = 1e30f;
+    for (int i = 0; i < map.spawn_count; ++i) {
+      float dx = map.spawns[i].x - p.pos.x;
+      float dz = map.spawns[i].z - p.pos.z;
+      float d = dx * dx + dz * dz;
+      if (d < best_dist) { best_dist = d; best = i; }
+    }
+    if (best >= 0) {
+      p.pos = map.spawns[best];
+      p.vel = {0.0f, 0.0f, 0.0f};
+      p.on_ground = false;
+      p.sliding = false;
+      p.wall_contact_time = 0.0f;
+      p.wall_normal = {0.0f, 0.0f, 0.0f};
+      p.dash_air_control_time = 0.0f;
+      p.move_sound = SND_RESPAWN;
+    } else {
+      p.pos.y = map.void_y + 5.0f;
+      p.vel = {0.0f, 0.0f, 0.0f};
+    }
+  }
 }

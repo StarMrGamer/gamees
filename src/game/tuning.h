@@ -78,3 +78,7 @@ constexpr float MATCH_RESTART_TIME = 10.0f;
 constexpr float CLIENT_TIMEOUT = 5.0f;
 constexpr int   SERVER_INPUT_QUEUE = 8;
 constexpr float INPUT_STALE_TIME = 0.25f;
+// Lag compensation: how far back the server may rewind remote players' hit
+// boxes to match the shooter's view. One second covers high-ping LANs/VPNs;
+// History keeps 1.5 s so there is always headroom.
+constexpr int   LAG_COMP_MAX_REWIND = 60;

@@ -28,10 +28,12 @@ Vec3 weapon_muzzle_pos(const Player& p) {
 // crosshair rather than parallel-offset from it. Used for both the authoritative
 // hitscan and the client's tracer, so the two always agree.
 Vec3 weapon_converged_dir(const GameState& s, const Map& map, int shooter,
-                          Vec3 eye, Vec3 view_dir, Vec3 muzzle, float range) {
+                          Vec3 eye, Vec3 view_dir, Vec3 muzzle, float range,
+                          const PlayerPose* rewind) {
   float wall_t = ray_map(map, eye, view_dir, range);
   float hit_t = range;
-  int hit = find_player_ray_hit(s, eye, view_dir, wall_t, shooter, &hit_t);
+  int hit = rewind ? find_player_ray_hit_poses(rewind, eye, view_dir, wall_t, shooter, &hit_t)
+                   : find_player_ray_hit(s, eye, view_dir, wall_t, shooter, &hit_t);
   float target_t = hit >= 0 ? hit_t : wall_t;
   Vec3 target = eye + view_dir * target_t;
   Vec3 dir = vec3_normalize(target - muzzle);
@@ -62,31 +64,60 @@ static float distance_falloff(float dist, float start, float end, float min_frac
 
 static void fire_hitscan(GameState& s, const Map& map, int shooter, Vec3 origin, Vec3 shot_dir,
                          float range, float damage, float knockback,
-                         float falloff_start, float falloff_end, float min_frac) {
+                         float falloff_start, float falloff_end, float min_frac,
+                         const PlayerPose* rewind) {
   float wall_t = ray_map(map, origin, shot_dir, range);
   float hit_t = range;
-  int hit = find_player_ray_hit(s, origin, shot_dir, wall_t, shooter, &hit_t);
+  int hit = rewind ? find_player_ray_hit_poses(rewind, origin, shot_dir, wall_t, shooter, &hit_t)
+                   : find_player_ray_hit(s, origin, shot_dir, wall_t, shooter, &hit_t);
   if (hit >= 0) {
     float scale = distance_falloff(hit_t, falloff_start, falloff_end, min_frac);
     damage_player(s, hit, shooter, damage * scale, shot_dir * (knockback * scale));
   }
 }
 
-int find_player_ray_hit(const GameState& s, Vec3 origin, Vec3 dir, float max_t,
-                        int exclude, float* t_out) {
+namespace {
+
+// One ray-vs-players loop, shared by the live and the rewound path. `at`
+// returns the pose to test for a player index, so neither caller has to
+// materialise an array the other one needs.
+template <typename PoseAt>
+int ray_hit_players(PoseAt at, Vec3 origin, Vec3 dir, float max_t, int exclude, float* t_out) {
   int best = -1;
   float best_t = max_t;
   for (int i = 0; i < MAX_PLAYERS; ++i) {
-    const Player& p = s.players[i];
-    if (!p.active || !p.alive || i == exclude) continue;
+    const PlayerPose& pose = at(i);
+    if (!pose.active || !pose.alive || i == exclude) continue;
     float t = max_t;
-    if (ray_aabb(origin, dir, player_aabb(p.pos, p.crouching), best_t, &t) && t < best_t) {
+    if (ray_aabb(origin, dir, player_aabb(pose.pos, pose.crouching), best_t, &t) && t < best_t) {
       best_t = t;
       best = i;
     }
   }
   if (best >= 0 && t_out) *t_out = best_t;
   return best;
+}
+
+}  // namespace
+
+int find_player_ray_hit_poses(const PlayerPose poses[MAX_PLAYERS], Vec3 origin, Vec3 dir,
+                              float max_t, int exclude, float* t_out) {
+  return ray_hit_players([poses](int i) -> const PlayerPose& { return poses[i]; }, origin, dir,
+                         max_t, exclude, t_out);
+}
+
+// Reads live players straight out of the GameState. A shotgun blast runs this
+// eight times, so it must not stage a pose array on every call.
+int find_player_ray_hit(const GameState& s, Vec3 origin, Vec3 dir, float max_t,
+                        int exclude, float* t_out) {
+  PlayerPose scratch;
+  return ray_hit_players(
+      [&s, &scratch](int i) -> const PlayerPose& {
+        const Player& p = s.players[i];
+        scratch = {p.pos, p.crouching, p.alive, p.active};
+        return scratch;
+      },
+      origin, dir, max_t, exclude, t_out);
 }
 
 void damage_player(GameState& s, int victim, int attacker, float amount, Vec3 knockback) {
@@ -118,7 +149,7 @@ void damage_player(GameState& s, int victim, int attacker, float amount, Vec3 kn
   push_event(s, EV_SOUND, SND_DEATH, static_cast<uint8_t>(victim), player_center(v));
 }
 
-void weapon_fire(GameState& s, const Map& map, int shooter) {
+void weapon_fire(GameState& s, const Map& map, int shooter, const PlayerPose* rewind) {
   if (shooter < 0 || shooter >= MAX_PLAYERS) return;
   Player& p = s.players[shooter];
   if (!p.active || !p.alive || p.fire_cooldown > 0.0f) return;
@@ -128,7 +159,7 @@ void weapon_fire(GameState& s, const Map& map, int shooter) {
   Vec3 origin = weapon_muzzle_pos(p);
   float aim_range = p.weapon == WEAPON_SHOTGUN ? SHOTGUN_RANGE :
                     (p.weapon == WEAPON_LMG ? LMG_RANGE : RIFLE_RANGE);
-  Vec3 shot_dir = weapon_converged_dir(s, map, shooter, eye, dir, origin, aim_range);
+  Vec3 shot_dir = weapon_converged_dir(s, map, shooter, eye, dir, origin, aim_range, rewind);
 
   if (p.weapon == WEAPON_ROCKET) {
     for (int i = 0; i < MAX_ROCKETS; ++i) {
@@ -150,20 +181,20 @@ void weapon_fire(GameState& s, const Map& map, int shooter) {
     for (int pellet = 0; pellet < SHOTGUN_PELLETS; ++pellet) {
       fire_hitscan(s, map, shooter, origin, shotgun_pellet_dir(shot_dir, right, pellet),
                    SHOTGUN_RANGE, pellet_damage, SHOTGUN_KNOCKBACK,
-                   SHOTGUN_FALLOFF_START, SHOTGUN_FALLOFF_END, SHOTGUN_MIN_DAMAGE_FRAC);
+                   SHOTGUN_FALLOFF_START, SHOTGUN_FALLOFF_END, SHOTGUN_MIN_DAMAGE_FRAC, rewind);
     }
     push_event(s, EV_SOUND, SND_SHOTGUN, static_cast<uint8_t>(shooter), origin);
   } else if (p.weapon == WEAPON_LMG) {
     p.fire_cooldown = LMG_INTERVAL;
     fire_hitscan(s, map, shooter, origin, shot_dir, LMG_RANGE,
                  LMG_DAMAGE * player_class_damage_scale(p.player_class), LMG_KNOCKBACK,
-                 0.0f, 1.0f, 1.0f);
+                 0.0f, 1.0f, 1.0f, rewind);
     push_event(s, EV_SOUND, SND_LMG, static_cast<uint8_t>(shooter), origin);
   } else {
     p.fire_cooldown = RIFLE_INTERVAL;
     fire_hitscan(s, map, shooter, origin, shot_dir, RIFLE_RANGE,
                  RIFLE_DAMAGE * player_class_damage_scale(p.player_class), RIFLE_KNOCKBACK,
-                 0.0f, 1.0f, 1.0f);
+                 0.0f, 1.0f, 1.0f, rewind);
     push_event(s, EV_SOUND, SND_RIFLE, static_cast<uint8_t>(shooter), origin);
   }
 }

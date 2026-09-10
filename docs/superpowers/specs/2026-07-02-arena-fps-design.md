@@ -95,7 +95,10 @@ server simulates).
 Plain text, one directive per line:
 
 - `box x y z w h d r g b` — solid colored AABB (world geometry and collision are
-  the same data; stairs approximate ramps)
+  the same data)
+- `ramp x y z w h d dir r g b` — a wedge whose top surface slopes from `y` at
+  the low edge up to `y+h` along `dir` (`+x`/`-x`/`+z`/`-z`); walkable, not a
+  stair-stepped box
 - `spawn x y z yaw` — player spawn point
 - `health x y z` — health pack location
 - `light dx dy dz` / `fog r g b density` — visual tuning
@@ -242,3 +245,65 @@ as originally specified. Protocol is v4 with a 4 KB packet cap. The event
 ring grew to 64 entries and snapshots carry the 16 newest events. Movement
 sounds (jump, dash, slide, and a new landing thud) are reported by the
 simulation itself via `Player::move_sound`.
+
+**2026-09-11** — Lag compensation and jitter-buffered interpolation, both
+originally v1 non-goals and until now absent.
+
+*Server-side lag compensation.* The server records a ring of player hit-test
+poses (`src/game/history.*`, 1.5 s at 60 Hz) after every tick. Each input
+carries `view_tick`, the server tick the client's render clock was showing
+when it sampled that input. On fire, remote players are hit-tested at their
+`view_tick` poses (clamped to `LAG_COMP_MAX_REWIND`, default 60 ticks) while
+the shooter is never rewound and damage/knockback still apply to live state.
+Rocket projectiles are not rewound. `weapon_fire` takes an optional
+`PlayerPose*`; passing `nullptr` keeps the old live-hit behavior for tests and
+callers without history. `game_tick` takes an optional `History*`.
+
+*Client interpolation.* The client keeps an 8-snapshot ring and a render
+clock that advances with wall time, decoupled from packet arrival. It aims to
+sit `INTERP_TARGET_DELAY_TICKS` (2) behind the newest snapshot, clamped so it
+can never outrun the newest tick. Remote entities interpolate between the two
+snapshots bracketing that clock; reordering and a few dropped snapshots are
+absorbed by the ring. The local player is still predicted from the newest
+snapshot. The render clock is what populates `view_tick`, so what the shooter
+sees and what the server rewinds to agree.
+
+Protocol is v6 (inputs gained a 32-bit `view_tick`). Client render micro-opts:
+one view-projection per frame for enemy health bars, and no full `GameState`
+value-init per frame. Tests: `test_history.cpp` plus lag-comp and view-tick
+cases in `test_weapons.cpp` / `test_client.cpp`.
+
+*Double jump is always its own button* (same date). The client used to default
+the double-jump bind to "same as jump", which silently fed `BTN_AIRJUMP` from
+the normal jump button, so jumping twice fired a double jump. The mirror bind
+is removed: the double jump is resolved only from its own bind (default Left
+Alt; `lalt|space|mwheelup|mwheeldown`), and both the config file and the
+default map are now looked up relative to the executable as well as the working
+directory, so a saved config is no longer ignored when the game is launched
+from elsewhere. Regression covered by `test_config.cpp`.
+
+*Source-map importer.* Multiple maps was a v1 non-goal, so `arena --import-map`
+now converts Quake/idTech `.map` and Valve Source `.vmf` files into the arena
+text format (`src/tools/map_import.*`): each brush becomes the AABB of its
+convex hull (plane half-space intersection, winding-agnostic), `info_player_*`
+entities become spawns and `item_health*` become health packs, with a
+Z-up→Y-up conversion, texture-derived colours, and a largest-brushes-win cap
+(`MAX_MAP_BOXES`, raised to 4096). Compiled Source `.bsp` (VBSP v19-21) is read
+too — brush planes and the entity lump, skipping non-solid volumes — so maps
+shipped with a game can be imported from the player's own install (verified on
+CS:Source `de_dust2` and HL2 maps). Covered by `test_map_import.cpp`.
+
+*Slopes, void layer, sky, leak check.* The engine gained a `ramp` primitive
+(triangular prism with a walkable sloped top) so the importer emits real slopes
+instead of stair-steps; collision keeps the player on the surface within a step
+and blocks a ramp face more than a step above the feet, and it renders as a
+wedge. Each map computes `void_y` below its lowest solid geometry; in the shared
+movement sim a player who falls past it is teleported to the nearest spawn with
+zero momentum (so prediction and server agree). The renderer draws a procedural
+sky gradient behind the world (horizon from `sky`, zenith from `sky_zenith`),
+and the importer drops horizontal sky caps so levels are open to it.
+`--check-map` / `map_check_leaks` voxelises a map and does a per-player-height
+horizontal flood fill from the boundary to report any spawn reachable from
+outside (a gap in the walls), ignoring open-sky connectivity; `de_dust2` and the
+shipped arena both report sealed. Covered by `test_movement.cpp` and
+`test_map_import.cpp`.

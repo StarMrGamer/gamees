@@ -1,19 +1,52 @@
 #include "client/config.h"
 
 #include "core/log.h"
+#include "platform/paths.h"
 
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 static constexpr float CONFIG_MIN_SENSITIVITY = 0.1f;
 static constexpr float CONFIG_MAX_SENSITIVITY = 20.0f;
+static constexpr const char* CONFIG_FILE_NAME = "arena.cfg";
 
 const char* client_config_path() {
   const char* env = std::getenv("ARENA_CONFIG");
-  return env && env[0] ? env : "arena.cfg";
+  return env && env[0] ? env : CONFIG_FILE_NAME;
+}
+
+static bool config_file_exists(const char* path) {
+  FILE* f = std::fopen(path, "r");
+  if (!f) return false;
+  std::fclose(f);
+  return true;
+}
+
+// Resolve the config to read/write without depending on the working directory:
+// an explicit ARENA_CONFIG wins, then arena.cfg in the cwd, then next to the
+// executable (and up to three parents, so build/ finds the repo's file). Falls
+// back to the cwd path so a fresh install still saves somewhere sensible.
+static std::string resolve_config_path() {
+  const char* env = std::getenv("ARENA_CONFIG");
+  if (env && env[0]) return env;
+  if (config_file_exists(CONFIG_FILE_NAME)) return CONFIG_FILE_NAME;
+
+  char dir[1024];
+  if (executable_directory(dir, sizeof(dir))) {
+    std::string d = dir;
+    for (int i = 0; i < 4; ++i) {
+      std::string candidate = d + "/" + CONFIG_FILE_NAME;
+      if (config_file_exists(candidate.c_str())) return candidate;
+      size_t slash = d.find_last_of("/\\");
+      if (slash == std::string::npos || slash == 0) break;
+      d.resize(slash);
+    }
+  }
+  return CONFIG_FILE_NAME;
 }
 
 const char* client_jump_bind_name(uint8_t bind) {
@@ -58,14 +91,17 @@ const char* client_airjump_bind_name(uint8_t bind) {
     case AIRJUMP_BIND_SPACE: return "space";
     case AIRJUMP_BIND_MWHEEL_UP: return "mwheelup";
     case AIRJUMP_BIND_MWHEEL_DOWN: return "mwheeldown";
-    default: return "jump";
+    default: return "lalt";
   }
 }
 
 bool client_airjump_bind_parse(const char* text, uint8_t* out) {
   if (!text || !out) return false;
-  if (text_equals_ci(text, "jump") || text_equals_ci(text, "same")) {
-    *out = AIRJUMP_BIND_JUMP;
+  // "jump"/"same" used to mean "mirror the jump button"; that is no longer a
+  // valid bind, so a legacy config falls back to the default.
+  if (text_equals_ci(text, "jump") || text_equals_ci(text, "same") ||
+      text_equals_ci(text, "lalt") || text_equals_ci(text, "alt")) {
+    *out = AIRJUMP_BIND_LALT;
     return true;
   }
   if (text_equals_ci(text, "space")) {
@@ -144,8 +180,8 @@ static bool split_config_line(char* line, char** key_out, char** value_out) {
 }
 
 bool client_config_load(ClientSettings& settings) {
-  const char* path = client_config_path();
-  FILE* f = std::fopen(path, "r");
+  std::string path = resolve_config_path();
+  FILE* f = std::fopen(path.c_str(), "r");
   if (!f) return false;
 
   char line[256];
@@ -161,7 +197,7 @@ bool client_config_load(ClientSettings& settings) {
       if (client_jump_bind_parse(value, &parsed)) settings.jump_bind = parsed;
     } else if (text_equals_ci(key, "doublejump") || text_equals_ci(key, "airjump") ||
                text_equals_ci(key, "airjump_bind")) {
-      uint8_t parsed = AIRJUMP_BIND_JUMP;
+      uint8_t parsed = AIRJUMP_BIND_LALT;
       if (client_airjump_bind_parse(value, &parsed)) settings.airjump_bind = parsed;
     }
   }
@@ -170,10 +206,10 @@ bool client_config_load(ClientSettings& settings) {
 }
 
 bool client_config_save(const ClientSettings& settings) {
-  const char* path = client_config_path();
-  FILE* f = std::fopen(path, "w");
+  std::string path = resolve_config_path();
+  FILE* f = std::fopen(path.c_str(), "w");
   if (!f) {
-    log_warn("failed to save config '%s'", path);
+    log_warn("failed to save config '%s'", path.c_str());
     return false;
   }
   std::fprintf(f, "# arena client config\n");
