@@ -20,12 +20,31 @@ enum AirJumpBind : uint8_t {
   AIRJUMP_BIND_MWHEEL_DOWN = 3,
 };
 
+// 0 means no limit. The frame loop used to end in an unconditional
+// SDL_Delay(1), which pinned the client near 1000 fps on any machine fast
+// enough to notice; the cap is now an explicit setting that defaults to off.
+constexpr int MAX_FPS_UNLIMITED = 0;
+constexpr int MIN_FPS_CAP = 30;
+constexpr int MAX_FPS_CAP = 1000;
+
 struct ClientSettings {
   float sensitivity = 3.0f;
   uint8_t player_class = CLASS_RANGER;
   uint8_t jump_bind = JUMP_BIND_SPACE;
   uint8_t airjump_bind = AIRJUMP_BIND_LALT;
+  int max_fps = MAX_FPS_UNLIMITED;
+  bool vsync = false;
 };
+
+// Clamps a requested cap to something sane. Anything at or below zero means
+// unlimited; a cap below MIN_FPS_CAP is almost certainly a typo and would make
+// the game unplayable, so it is raised rather than honoured.
+inline int sanitize_max_fps(int requested) {
+  if (requested <= 0) return MAX_FPS_UNLIMITED;
+  if (requested < MIN_FPS_CAP) return MIN_FPS_CAP;
+  if (requested > MAX_FPS_CAP) return MAX_FPS_UNLIMITED;
+  return requested;
+}
 
 // Pure resolution of a double-jump bind against raw input state. Kept free of
 // SDL so it can be unit-tested and so the jump button can never leak into it.

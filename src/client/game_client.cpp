@@ -31,10 +31,49 @@ constexpr float SOURCE_MOUSE_DEGREES_PER_COUNT = 0.022f;
 constexpr float MIN_SENSITIVITY = 0.1f;
 constexpr float MAX_SENSITIVITY = 20.0f;
 constexpr float SENSITIVITY_STEP = 0.1f;
-constexpr int SETTINGS_ITEM_COUNT = 5;
+constexpr int SETTINGS_ITEM_COUNT = 7;
 
+// Nanosecond resolution on purpose. SDL_GetTicks() is whole milliseconds, so
+// above a few hundred fps the frame delta quantises to 1 ms or 0 ms - which
+// makes frametime graphs meaningless and jitters anything scaled by dt.
 static double app_seconds() {
-  return static_cast<double>(SDL_GetTicks()) / 1000.0;
+  return static_cast<double>(SDL_GetTicksNS()) / 1e9;
+}
+
+// Waits until `target` using a coarse sleep for the bulk of the remaining time
+// and a short spin for the tail. Sleeping the whole way overshoots by however
+// much the scheduler feels like; spinning the whole way burns a core. The
+// hand-off point is one millisecond, which is about the worst case for
+// SDL_DelayNS granularity on a normal desktop kernel.
+static void wait_until(double target) {
+  for (;;) {
+    double now = app_seconds();
+    double remaining = target - now;
+    if (remaining <= 0.0) return;
+    if (remaining > 0.0015) {
+      SDL_DelayNS(static_cast<Uint64>((remaining - 0.001) * 1e9));
+    } else {
+      SDL_CPUPauseInstruction();
+    }
+  }
+}
+
+static const char* max_fps_label(int max_fps, char* buf, size_t cap) {
+  if (max_fps <= 0) return "UNLIMITED";
+  std::snprintf(buf, cap, "%d", max_fps);
+  return buf;
+}
+
+// Cycles through the caps offered in the settings menu.
+static int cycle_max_fps(int current, int dir) {
+  static const int steps[] = {MAX_FPS_UNLIMITED, 60, 120, 144, 165, 240, 360, 500, 1000};
+  const int count = static_cast<int>(sizeof(steps) / sizeof(steps[0]));
+  int index = 0;
+  for (int i = 0; i < count; ++i) {
+    if (steps[i] == current) { index = i; break; }
+  }
+  index = (index + dir % count + count) % count;
+  return steps[index];
 }
 
 static float sanitize_sensitivity(float sensitivity) {
@@ -171,7 +210,7 @@ static void draw_scoreboard(Hud& hud, int w, int h, const GameState& s, int loca
 
 static void draw_settings_menu(Hud& hud, int w, int h, const ClientSettings& settings, int selected) {
   float panel_w = 460.0f;
-  float panel_h = 284.0f;
+  float panel_h = 360.0f;
   float x = (static_cast<float>(w) - panel_w) * 0.5f;
   float y = (static_cast<float>(h) - panel_h) * 0.5f;
   hud_rect(hud, x, y, panel_w, panel_h, {0.03f, 0.035f, 0.04f}, 0.88f);
@@ -188,7 +227,13 @@ static void draw_settings_menu(Hud& hud, int w, int h, const ClientSettings& set
                   "%sJUMP %s", prefix(2), client_jump_bind_name(settings.jump_bind));
   hud_text_shadow(hud, x + 36.0f, y + 188.0f, 1.20f, color(3),
                   "%sDOUBLE JUMP %s", prefix(3), client_airjump_bind_name(settings.airjump_bind));
-  hud_text_shadow(hud, x + 36.0f, y + 226.0f, 1.20f, color(4), "%sQUIT", prefix(4));
+  char fps_buf[16];
+  hud_text_shadow(hud, x + 36.0f, y + 226.0f, 1.20f, color(4),
+                  "%sMAX FPS %s", prefix(4), max_fps_label(settings.max_fps, fps_buf,
+                                                           sizeof(fps_buf)));
+  hud_text_shadow(hud, x + 36.0f, y + 264.0f, 1.20f, color(5),
+                  "%sVSYNC %s", prefix(5), settings.vsync ? "ON" : "OFF");
+  hud_text_shadow(hud, x + 36.0f, y + 302.0f, 1.20f, color(6), "%sQUIT", prefix(6));
 }
 
 static void add_kill_feed(KillFeedItem feed[4], const GameState& s, const GameEvent& e) {
@@ -540,6 +585,13 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
   set_mouse_capture(window, true);
   SDL_RaiseWindow(window);
 
+  // Set the swap interval explicitly. Leaving it unset means the frame rate
+  // depends on whatever the GL driver defaults to, which differs between
+  // machines and is not something the player can see or change.
+  if (!SDL_GL_SetSwapInterval(settings.vsync ? 1 : 0)) {
+    log_warn("failed to set swap interval: %s", SDL_GetError());
+  }
+
   Map map{};
   if (!map_load(map_path ? map_path : "maps/arena.txt", &map)) {
     SDL_GL_DestroyContext(gl);
@@ -591,6 +643,7 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
   int fps_frames = 0;
   float shown_fps = 0.0f;
   double last = app_seconds();
+  double next_frame_time = last;
   while (running) {
     double now = app_seconds();
     float dt = static_cast<float>(now - last);
@@ -652,11 +705,26 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
             settings.airjump_bind = cycle_airjump_bind(settings.airjump_bind, 1);
             client_config_save(settings);
           }
+          if (settings_selected == 4 &&
+              (ev.key.key == SDLK_LEFT || ev.key.key == SDLK_RIGHT)) {
+            settings.max_fps = cycle_max_fps(settings.max_fps,
+                                             ev.key.key == SDLK_LEFT ? -1 : 1);
+            next_frame_time = app_seconds();
+            client_config_save(settings);
+          }
+          if (settings_selected == 5 &&
+              (ev.key.key == SDLK_LEFT || ev.key.key == SDLK_RIGHT)) {
+            settings.vsync = !settings.vsync;
+            if (!SDL_GL_SetSwapInterval(settings.vsync ? 1 : 0)) {
+              log_warn("failed to set swap interval: %s", SDL_GetError());
+            }
+            client_config_save(settings);
+          }
           if (ev.key.key == SDLK_RETURN || ev.key.key == SDLK_KP_ENTER) {
             if (settings_selected == 0) {
               settings_open = false;
               set_mouse_capture(window, true);
-            } else if (settings_selected == 4) {
+            } else if (settings_selected == 6) {
               running = false;
             }
           }
@@ -803,7 +871,23 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     }
     hud_end(hud);
     SDL_GL_SwapWindow(window);
-    SDL_Delay(1);
+
+    // Frame pacing. There is deliberately no sleep in the uncapped case: the
+    // old unconditional SDL_Delay(1) here is what pinned the client at roughly
+    // 1000 fps regardless of how fast the machine was.
+    if (!(SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS)) {
+      // Alt-tabbed: no reason to render flat out, and no reason to hold a core.
+      SDL_Delay(8);
+      next_frame_time = app_seconds();
+    } else if (settings.max_fps > 0) {
+      double period = 1.0 / static_cast<double>(settings.max_fps);
+      next_frame_time += period;
+      double now_after = app_seconds();
+      // If we fell behind (a hitch, or a cap we cannot hit) start fresh rather
+      // than trying to claw back the missed time with a burst of short frames.
+      if (next_frame_time < now_after) next_frame_time = now_after;
+      else wait_until(next_frame_time);
+    }
   }
 
   client_disconnect(client);

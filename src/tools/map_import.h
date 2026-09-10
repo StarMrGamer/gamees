@@ -12,10 +12,12 @@
 //   - Valve Source ".vmf"    (KeyValues; Hammer native)
 // The text dialects are auto-detected from their content; ".bsp" by its magic.
 //
-// Solids are approximated as axis-aligned boxes (the arena engine's only
-// primitive): each brush is converted to the AABB of its convex hull, so sloped
-// or curved brushes become their bounding blocks. Entities become spawn points
-// and health packs; textures map to muted vertex colours.
+// Solids are approximated with the arena engine's only primitives: axis-aligned
+// boxes and ramps. An axis-aligned brush is exact; a brush with a single
+// upward-sloping face becomes a ramp; anything else is carved into a small set
+// of boxes that follow its shape (see MapImportOptions::subdivide) rather than
+// collapsing to its bounding block. Entities become spawn points and health
+// packs; textures map to muted vertex colours.
 
 struct MapImportOptions {
   // Metres per source unit. Source/Quake units are ~one inch, so the default
@@ -25,6 +27,10 @@ struct MapImportOptions {
   int max_boxes = 0;  // 0 => MAX_MAP_BOXES
   // Keep solid detail/brush entities (func_detail, func_brush, ...).
   bool include_detail = true;
+  // Carve angled brushes into several boxes instead of emitting one bounding
+  // box. Costs boxes; without it, every sloped or diagonal solid seals off the
+  // open space inside its bounding block.
+  bool subdivide = true;
 };
 
 struct MapImportResult {
@@ -36,6 +42,16 @@ struct MapImportResult {
   int boxes_truncated = 0;  // dropped because of max_boxes
   int spawns = 0;
   int health = 0;
+  // How faithfully solids survived the conversion. A brush whose faces are all
+  // axis-aligned is represented exactly; one sloped face becomes a ramp; a
+  // brush with more angled faces than that collapses to its bounding box, which
+  // fills in space that was open in the original.
+  int brushes_exact = 0;
+  int brushes_ramped = 0;
+  int brushes_approximated = 0;
+  // Mean fraction of each approximated brush's bounding box that was actually
+  // solid. 1.0 means no error; 0.5 means half the emitted block is invented.
+  float approx_fill = 0.0f;
   bool truncated = false;
   // Set when the exterior flood-fill reaches a spawn, i.e. a gap to the void.
   bool leaks_to_void = false;

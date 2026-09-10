@@ -78,3 +78,48 @@ TEST(client_config_parses_jump_aliases) {
   CHECK(client_jump_bind_parse("SPACE", &bind));
   CHECK_EQ_INT(bind, JUMP_BIND_SPACE);
 }
+
+// The frame cap used to be an accidental SDL_Delay(1) in the render loop.
+// Now it is a setting, so the clamp around it needs to hold: zero and negative
+// mean unlimited, a silly-low value is raised rather than making the game
+// unplayable, and anything past the top of the range means unlimited too.
+TEST(max_fps_clamp) {
+  CHECK_EQ_INT(sanitize_max_fps(0), MAX_FPS_UNLIMITED);
+  CHECK_EQ_INT(sanitize_max_fps(-5), MAX_FPS_UNLIMITED);
+  CHECK_EQ_INT(sanitize_max_fps(1), MIN_FPS_CAP);
+  CHECK_EQ_INT(sanitize_max_fps(29), MIN_FPS_CAP);
+  CHECK_EQ_INT(sanitize_max_fps(30), 30);
+  CHECK_EQ_INT(sanitize_max_fps(144), 144);
+  CHECK_EQ_INT(sanitize_max_fps(1000), 1000);
+  CHECK_EQ_INT(sanitize_max_fps(5000), MAX_FPS_UNLIMITED);
+}
+
+TEST(config_round_trips_max_fps_and_vsync) {
+  const char* path = "/tmp/arena_test_fps.cfg";
+  setenv("ARENA_CONFIG", path, 1);
+  std::remove(path);
+
+  ClientSettings out{};
+  out.max_fps = 240;
+  out.vsync = true;
+  CHECK(client_config_save(out));
+
+  ClientSettings in{};
+  CHECK(client_config_load(in));
+  CHECK_EQ_INT(in.max_fps, 240);
+  CHECK(in.vsync);
+
+  // "unlimited" must survive the round trip as well.
+  out.max_fps = MAX_FPS_UNLIMITED;
+  out.vsync = false;
+  CHECK(client_config_save(out));
+  ClientSettings in2{};
+  in2.max_fps = 123;
+  in2.vsync = true;
+  CHECK(client_config_load(in2));
+  CHECK_EQ_INT(in2.max_fps, MAX_FPS_UNLIMITED);
+  CHECK(!in2.vsync);
+
+  std::remove(path);
+  unsetenv("ARENA_CONFIG");
+}

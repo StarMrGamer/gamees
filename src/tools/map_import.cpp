@@ -708,10 +708,53 @@ static bool plane_is_axis_aligned(const Plane& p) {
   return axes == 1;
 }
 
+// A brush that is not axis-aligned and not a simple ramp used to be emitted as
+// its whole bounding box, which seals off however much of that box was open in
+// the original - on de_dust2 that was 736 brushes averaging only 65% solid, so
+// roughly a third of each emitted block was invented. Instead, carve the
+// bounding box into cells and keep the ones the brush actually touches, then
+// merge those cells back into as few boxes as possible.
+//
+// Cells are kept when they *intersect* the brush rather than when their centre
+// is inside it. Erring toward solid matters: a missing cell is a hole in a wall
+// you can see or fall through, while an extra one is at most a cell of
+// over-fill, and the cell is deliberately smaller than the player.
+namespace {
+
+// Metres per carve cell, and a ceiling on cells per axis so one huge brush
+// cannot eat the whole box budget. 0.25 m is under half the player width, and
+// on de_dust2 it lands at ~3600 of the 4096 available boxes - going finer hits
+// the cap, gets truncated, and comes out worse. Re-tune with `arena --bench`
+// and the reachable-position count from `--check-map` if that budget changes.
+constexpr float BRUSH_CELL_TARGET = 0.25f;
+constexpr int BRUSH_CELL_MAX_AXIS = 12;
+
+// False only when some plane puts every corner of the cell outside the brush.
+bool cell_touches_brush(const std::vector<Plane>& planes, Vec3 lo, Vec3 hi) {
+  for (const Plane& p : planes) {
+    bool all_out = true;
+    for (int c = 0; c < 8; ++c) {
+      Vec3 v{(c & 1) ? hi.x : lo.x, (c & 2) ? hi.y : lo.y, (c & 4) ? hi.z : lo.z};
+      if (vec3_dot(p.n, v) <= p.d + 0.001f) { all_out = false; break; }
+    }
+    if (all_out) return false;
+  }
+  return true;
+}
+
+int axis_divisions(float extent) {
+  int n = static_cast<int>(std::ceil(extent / BRUSH_CELL_TARGET));
+  if (n < 1) n = 1;
+  if (n > BRUSH_CELL_MAX_AXIS) n = BRUSH_CELL_MAX_AXIS;
+  return n;
+}
+
+}  // namespace
+
 // Append the arena geometry for one source brush. Axis-aligned brushes become a
 // single box; a brush with one upward-sloping face becomes a ramp primitive so
 // it reads and plays as a real slope.
-static void append_brush_boxes(const SourceBrush& brush, float scale,
+static void append_brush_boxes(const SourceBrush& brush, float scale, bool subdivide,
                                std::vector<OutBox>& boxes, std::vector<OutRamp>& ramps,
                                MapImportResult* result) {
   std::vector<Plane> planes;
@@ -781,10 +824,107 @@ static void append_brush_boxes(const SourceBrush& brush, float scale,
     if (std::fabs(asc.x) >= std::fabs(asc.z)) dir = asc.x >= 0.0f ? 0 : 1;
     else dir = asc.z >= 0.0f ? 2 : 3;
     ramps.push_back({mn, mx, color, dir});
+    if (result) ++result->brushes_ramped;
     return;
   }
 
-  add_box(mn, mx);
+  if (non_axis == 0) {
+    if (result) ++result->brushes_exact;
+    add_box(mn, mx);
+    return;
+  }
+
+  {
+    // How much of the bounding box the brush really fills. A brush that nearly
+    // fills it is not worth carving up.
+    const int N = 8;
+    int inside = 0;
+    for (int i = 0; i < N; ++i) {
+      for (int j = 0; j < N; ++j) {
+        for (int k = 0; k < N; ++k) {
+          Vec3 sp{mn.x + (mx.x - mn.x) * (i + 0.5f) / N,
+                  mn.y + (mx.y - mn.y) * (j + 0.5f) / N,
+                  mn.z + (mx.z - mn.z) * (k + 0.5f) / N};
+          bool in = true;
+          for (const Plane& p : planes) {
+            if (vec3_dot(p.n, sp) > p.d + 0.001f) { in = false; break; }
+          }
+          if (in) ++inside;
+        }
+      }
+    }
+    float fill = static_cast<float>(inside) / static_cast<float>(N * N * N);
+    if (result) {
+      ++result->brushes_approximated;
+      result->approx_fill += fill;
+    }
+
+    if (fill > 0.9f || !subdivide) {
+      add_box(mn, mx);
+      return;
+    }
+
+    const int nx = axis_divisions(mx.x - mn.x);
+    const int ny = axis_divisions(mx.y - mn.y);
+    const int nz = axis_divisions(mx.z - mn.z);
+    const float cx = (mx.x - mn.x) / static_cast<float>(nx);
+    const float cy = (mx.y - mn.y) / static_cast<float>(ny);
+    const float cz = (mx.z - mn.z) / static_cast<float>(nz);
+
+    std::vector<uint8_t> keep(static_cast<size_t>(nx) * ny * nz, 0);
+    auto at = [&](int i, int j, int k) -> uint8_t& {
+      return keep[(static_cast<size_t>(k) * ny + j) * nx + i];
+    };
+    int kept = 0;
+    for (int i = 0; i < nx; ++i) {
+      for (int j = 0; j < ny; ++j) {
+        for (int k = 0; k < nz; ++k) {
+          Vec3 lo{mn.x + cx * i, mn.y + cy * j, mn.z + cz * k};
+          Vec3 hi{lo.x + cx, lo.y + cy, lo.z + cz};
+          if (cell_touches_brush(planes, lo, hi)) { at(i, j, k) = 1; ++kept; }
+        }
+      }
+    }
+    if (kept == 0) {
+      add_box(mn, mx);  // should not happen, but never emit nothing
+      return;
+    }
+
+    // Greedy merge of kept cells into maximal boxes: grow along x, then y,
+    // then z, so a slab comes out as one box rather than a cloud of cells.
+    for (int k = 0; k < nz; ++k) {
+      for (int j = 0; j < ny; ++j) {
+        for (int i = 0; i < nx; ++i) {
+          if (!at(i, j, k)) continue;
+          int i1 = i;
+          while (i1 + 1 < nx && at(i1 + 1, j, k)) ++i1;
+          int j1 = j;
+          for (;;) {
+            if (j1 + 1 >= ny) break;
+            bool full = true;
+            for (int ii = i; ii <= i1; ++ii) if (!at(ii, j1 + 1, k)) { full = false; break; }
+            if (!full) break;
+            ++j1;
+          }
+          int k1 = k;
+          for (;;) {
+            if (k1 + 1 >= nz) break;
+            bool full = true;
+            for (int ii = i; ii <= i1 && full; ++ii)
+              for (int jj = j; jj <= j1; ++jj)
+                if (!at(ii, jj, k1 + 1)) { full = false; break; }
+            if (!full) break;
+            ++k1;
+          }
+          for (int ii = i; ii <= i1; ++ii)
+            for (int jj = j; jj <= j1; ++jj)
+              for (int kk = k; kk <= k1; ++kk) at(ii, jj, kk) = 0;
+          add_box({mn.x + cx * i, mn.y + cy * j, mn.z + cz * k},
+                  {mn.x + cx * (i1 + 1), mn.y + cy * (j1 + 1), mn.z + cz * (k1 + 1)});
+        }
+      }
+    }
+  }
 }
 
 // True if a player standing at `s` (feet on the ground) would be inside solid
@@ -950,7 +1090,7 @@ static bool convert_source(const SourceMap& source, const std::string& name,
     if (take_brushes) {
       for (const SourceBrush& brush : entity.brushes) {
         if (result) ++result->brushes_seen;
-        append_brush_boxes(brush, options.scale, boxes, ramps, result);
+        append_brush_boxes(brush, options.scale, options.subdivide, boxes, ramps, result);
       }
     }
 
@@ -1116,6 +1256,10 @@ static bool convert_source(const SourceMap& source, const std::string& name,
     result->ramps_written = static_cast<int>(ramps.size());
     result->spawns = static_cast<int>(spawns.size());
     result->health = static_cast<int>(health.size());
+    // approx_fill accumulated a per-brush fraction above; turn it into a mean.
+    result->approx_fill = result->brushes_approximated > 0
+        ? result->approx_fill / static_cast<float>(result->brushes_approximated)
+        : 1.0f;
   }
   return true;
 }

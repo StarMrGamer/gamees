@@ -64,6 +64,8 @@ static void print_usage() {
       "  --name NAME, --class C         client identity (ranger|scout|tank)\n"
       "  --sensitivity F                mouse sensitivity, 0.1 to 20.0\n"
       "  --jump BIND, --doublejump BIND space|mwheelup|mwheeldown (doublejump also lalt)\n"
+      "  --maxfps N                     frame cap; 0 or 'unlimited' for none (default)\n"
+      "  --vsync / --no-vsync           swap interval (default off)\n"
       "  --ticks N, --players N         --simulate length and player count\n"
       "  --seconds N                    --netcheck duration\n"
       "  --seed N, --trace-every N      --simulate determinism seed and trace sampling\n"
@@ -246,6 +248,19 @@ int main(int argc, char** argv) {
       if (!parse_airjump_bind_arg(argv[++i], &client_settings.airjump_bind)) {
         fatal_error("invalid --doublejump, use jump, space, mwheelup, or mwheeldown");
       }
+    } else if (std::strcmp(argv[i], "--maxfps") == 0 && i + 1 < argc) {
+      const char* text = argv[++i];
+      if (std::strcmp(text, "unlimited") == 0 || std::strcmp(text, "0") == 0) {
+        client_settings.max_fps = MAX_FPS_UNLIMITED;
+      } else {
+        int value = std::atoi(text);
+        if (value < MIN_FPS_CAP) fatal_error("invalid --maxfps, use 0/unlimited or 30..1000");
+        client_settings.max_fps = sanitize_max_fps(value);
+      }
+    } else if (std::strcmp(argv[i], "--vsync") == 0) {
+      client_settings.vsync = true;
+    } else if (std::strcmp(argv[i], "--no-vsync") == 0) {
+      client_settings.vsync = false;
     } else if (std::strcmp(argv[i], "--fly") == 0) {
       // Accepted for the world milestone; the current client always uses player camera.
     } else {
@@ -365,6 +380,12 @@ int main(int argc, char** argv) {
              result.ramps_written, result.boxes_dropped + result.boxes_truncated,
              result.truncated ? " [truncated]" : "");
     log_info("  %d spawns, %d health", result.spawns, result.health);
+    log_info("  fidelity: %d exact, %d ramps, %d approximated to their bounding box",
+             result.brushes_exact, result.brushes_ramped, result.brushes_approximated);
+    if (result.brushes_approximated > 0) {
+      log_info("    approximated brushes are %.0f%% solid on average - the rest is"
+               " filled-in space", static_cast<double>(result.approx_fill) * 100.0);
+    }
     if (result.leaks_to_void) {
       log_warn("  %d/%d spawns connect to the void (first at %.1f %.1f %.1f)",
                result.leaked_spawns, result.spawns, result.first_leak.x,

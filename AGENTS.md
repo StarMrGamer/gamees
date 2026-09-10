@@ -56,6 +56,10 @@ All of them exit non-zero on failure. Two things worth knowing:
   player can reach and fall out of the world from. Run it after editing a map
   or touching movement/collision - a change to step height or hull size can
   open leaks in a map that was previously sealed.
+- Do not "fix" walk leaks by dropping barrier boxes at the leak columns. It
+  drives the count to zero while walling off doorways and ledges players are
+  meant to use, and the reachable-position metric is too coarse to notice.
+  `docs/AGENT_TOOLING.md` has the full account.
 
 ## Performance notes
 

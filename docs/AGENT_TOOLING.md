@@ -113,22 +113,60 @@ Falling out is not fatal - `player_move()` returns anyone below `void_y` to a
 spawn - so a leak is a level bug, not a crash. It still means players can walk
 off the world and get teleported mid-fight.
 
-### Sealing a map that leaks
+### Import fidelity, and why a map feels wrong
 
-`maps/de_dust2.txt` was imported from a Source map without its outer terrain
-and skybox, which left 259 reachable spots where you could step off a floor
-edge into open air. The fix was mechanical:
+The engine has two solid primitives: axis-aligned boxes and ramps. When
+importing a real Source map, each brush lands in one of three buckets, and
+`--import-map` reports the split:
 
-1. Run the walk check to get the leak columns.
-2. Emit a barrier box at each one, tall enough (2 m) that a 1.225 m jump cannot
-   clear it, merging adjacent columns into rectangles.
-3. Re-run - barriers change reachability, so this iterates. de_dust2 converged
-   in two passes: 259 leaks -> 7 -> 0, for 27 added boxes.
+```
+fidelity: 1021 exact, 326 ramps, 736 approximated to their bounding box
+```
 
-Check the reachable-position count before and after. It should drop by a
-percent or two (the lip columns you just blocked). A large drop means a barrier
-walled off a corridor and cut real play space out of the map - de_dust2 went
-47635 -> 46875, or -1.6%.
+- **exact** - every face axis-aligned, represented perfectly.
+- **ramps** - one upward-sloping face, becomes a ramp primitive.
+- **approximated** - anything else. These used to collapse to a single bounding
+  box, which seals off whatever was open inside it. On de_dust2 those 736
+  brushes were only **65% solid on average**, so a third of every emitted block
+  was invented geometry - diagonal walls turned their corners into solid, and
+  rooms behind them became unreachable.
+
+The importer now carves those brushes into a small set of boxes that follow the
+real shape (`MapImportOptions::subdivide`). On de_dust2 that is 1673 -> 3617
+boxes, 3900 m3 less invented solid, and about 1300 more standing positions the
+player can reach.
+
+Cell size is a budget problem, not a quality one. Measure, do not guess:
+
+| cell | boxes | reachable |
+|------|-------|-----------|
+| none | 1673 | 47635 |
+| 0.35 m | 2651 | 48683 |
+| 0.25 m | 3617 | 48904 |
+| 0.20 m | 4096 (cap) | 48886 |
+
+0.20 m hits `MAX_MAP_BOXES`, gets truncated, and comes out *worse* than 0.25 m.
+If you change the box budget, re-run this sweep rather than assuming finer is
+better.
+
+### What NOT to do about walk leaks
+
+`de_dust2` still reports 259 walk leaks. They are real - the import has no
+outer terrain or skybox, so at the edges of the level there is genuinely
+nothing underneath.
+
+The obvious fix is to drop a barrier box at every leak column. **Do not.** It
+was tried: 27 barriers, leaks went to zero, and the reachable-position count
+only fell 1.6%, which looked harmless. In play it was not - the barriers stood
+in doorways and at the lips of ledges and walled off places you are supposed to
+be able to walk into. The metric was too coarse to catch it and the change was
+reverted.
+
+Falling out is already handled: `player_move()` returns anyone below
+`map.void_y` to a spawn. A leak costs you a teleport, not a crash. Fixing them
+properly means restoring the missing outer geometry, not fencing the player in
+- and a barrier that blocks real play space is a worse bug than the leak it
+fixes.
 
 ## `arena_tests` - filtering
 

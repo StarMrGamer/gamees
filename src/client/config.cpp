@@ -199,6 +199,15 @@ bool client_config_load(ClientSettings& settings) {
                text_equals_ci(key, "airjump_bind")) {
       uint8_t parsed = AIRJUMP_BIND_LALT;
       if (client_airjump_bind_parse(value, &parsed)) settings.airjump_bind = parsed;
+    } else if (text_equals_ci(key, "maxfps") || text_equals_ci(key, "max_fps")) {
+      if (text_equals_ci(value, "unlimited") || text_equals_ci(value, "off")) {
+        settings.max_fps = MAX_FPS_UNLIMITED;
+      } else {
+        settings.max_fps = sanitize_max_fps(std::atoi(value));
+      }
+    } else if (text_equals_ci(key, "vsync")) {
+      settings.vsync = text_equals_ci(value, "1") || text_equals_ci(value, "on") ||
+                       text_equals_ci(value, "true") || text_equals_ci(value, "yes");
     }
   }
   std::fclose(f);
@@ -216,6 +225,9 @@ bool client_config_save(const ClientSettings& settings) {
   std::fprintf(f, "sensitivity %.3f\n", settings.sensitivity);
   std::fprintf(f, "jump %s\n", client_jump_bind_name(settings.jump_bind));
   std::fprintf(f, "doublejump %s\n", client_airjump_bind_name(settings.airjump_bind));
+  if (settings.max_fps > 0) std::fprintf(f, "maxfps %d\n", settings.max_fps);
+  else std::fprintf(f, "maxfps unlimited\n");
+  std::fprintf(f, "vsync %s\n", settings.vsync ? "on" : "off");
   std::fclose(f);
   return true;
 }
