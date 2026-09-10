@@ -1,8 +1,12 @@
 #include "game/map_check.h"
 
+#include "game/collision.h"
+#include "game/tuning.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -158,6 +162,149 @@ MapCheckReport map_check_leaks(const Map& map, const Vec3* points, int point_cou
         if (!rep.leaked) rep.first_leak = points[q];
         rep.leaked = true;
       }
+    }
+  }
+  return rep;
+}
+
+// ---------------------------------------------------------------------------
+// Reachability leak check
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Horizontal resolution of the walk. The player hull is 0.6 m wide, so half a
+// metre per step samples every gap they could actually fit through.
+constexpr float REACH_CELL = 0.5f;
+// Vertical quantisation for the visited set. Two standing spots within this
+// distance in the same column are the same place for search purposes.
+constexpr float REACH_Y_QUANTUM = 0.25f;
+// A plain jump clears 1.225 m (JUMP_VELOCITY^2 / 2*GRAVITY). Anything above
+// that needs a double jump or a rocket, which is not what "can you walk out of
+// the map" is asking about.
+constexpr float REACH_CLIMB = 1.225f;
+// Give up on a fall after four seconds; by then the player is either resting
+// or well past the void plane.
+constexpr int REACH_FALL_TICKS = 4 * TICK_RATE;
+constexpr int REACH_MAX_POSITIONS = 400000;
+
+struct ReachNode {
+  int ix, iz;
+  float y;
+};
+
+uint64_t reach_key(int ix, int iz, float y) {
+  int32_t qy = static_cast<int32_t>(std::floor(y / REACH_Y_QUANTUM));
+  return (static_cast<uint64_t>(static_cast<uint32_t>(ix)) << 40) ^
+         (static_cast<uint64_t>(static_cast<uint32_t>(iz)) << 20) ^
+         static_cast<uint64_t>(static_cast<uint32_t>(qy) & 0xFFFFFu);
+}
+
+// Drops a player from `from` under gravity using the real collision code.
+// Returns true when they come to rest (with the resting position in `out`),
+// false when they fall past the void plane.
+bool drop_to_rest(const Map& map, Vec3 from, Vec3* out) {
+  Vec3 pos = from;
+  Vec3 vel{0.0f, 0.0f, 0.0f};
+  for (int i = 0; i < REACH_FALL_TICKS; ++i) {
+    vel.y -= GRAVITY * TICK_DT;
+    MoveResult r = move_slide(map, pos, vel, false, TICK_DT);
+    pos = r.pos;
+    vel = r.vel;
+    if (pos.y < map.void_y) return false;
+    if (r.on_ground) {
+      *out = pos;
+      return true;
+    }
+  }
+  *out = pos;
+  return true;  // still falling after four seconds but above the void: not a leak
+}
+
+}  // namespace
+
+MapReachReport map_check_reachable_leaks(const Map& map) {
+  MapReachReport rep;
+  if ((map.box_count <= 0 && map.ramp_count <= 0) || map.spawn_count <= 0) return rep;
+  rep.ran = true;
+
+  std::vector<uint64_t> visited_list;
+  std::unordered_set<uint64_t> visited;
+  std::unordered_set<uint64_t> leak_columns;
+  std::vector<ReachNode> queue;
+
+  auto cell_x = [&](float x) { return static_cast<int>(std::floor(x / REACH_CELL)); };
+  auto world_x = [&](int ix) { return (static_cast<float>(ix) + 0.5f) * REACH_CELL; };
+
+  auto push = [&](int ix, int iz, float y) {
+    uint64_t key = reach_key(ix, iz, y);
+    if (!visited.insert(key).second) return;
+    if (static_cast<int>(queue.size()) + rep.reachable_positions > REACH_MAX_POSITIONS) return;
+    queue.push_back({ix, iz, y});
+  };
+
+  for (int i = 0; i < map.spawn_count; ++i) {
+    Vec3 rest;
+    Vec3 start = map.spawns[i];
+    start.y += 0.1f;
+    if (!drop_to_rest(map, start, &rest)) {
+      ++rep.spawns_unsupported;
+      if (rep.leaks_reported < MapReachReport::MAX_REPORTED) {
+        rep.leaks[rep.leaks_reported++] = map.spawns[i];
+      }
+      if (rep.leak_columns == 0) rep.first_leak = map.spawns[i];
+      ++rep.leak_columns;
+      continue;
+    }
+    push(cell_x(rest.x), cell_x(rest.z), rest.y);
+  }
+
+  const int dx[4] = {1, -1, 0, 0};
+  const int dz[4] = {0, 0, 1, -1};
+
+  while (!queue.empty()) {
+    ReachNode node = queue.back();
+    queue.pop_back();
+    ++rep.reachable_positions;
+    if (rep.reachable_positions > REACH_MAX_POSITIONS) break;
+
+    for (int d = 0; d < 4; ++d) {
+      int nix = node.ix + dx[d];
+      int niz = node.iz + dz[d];
+      float nx = world_x(nix);
+      float nz = world_x(niz);
+
+      // Find the lowest height at or above the current one where the player
+      // fits in the neighbouring column: that is where they would arrive,
+      // whether by walking on the level, stepping up, or jumping.
+      bool entered = false;
+      float entry_y = 0.0f;
+      for (float lift = 0.0f; lift <= REACH_CLIMB + 0.001f; lift += REACH_Y_QUANTUM) {
+        Vec3 probe{nx, node.y + lift, nz};
+        if (!map_box_overlap(map, player_aabb(probe, false))) {
+          entered = true;
+          entry_y = probe.y;
+          break;
+        }
+      }
+      if (!entered) continue;  // a wall, not a hole
+
+      Vec3 rest;
+      if (!drop_to_rest(map, {nx, entry_y, nz}, &rest)) {
+        uint64_t col = (static_cast<uint64_t>(static_cast<uint32_t>(nix)) << 32) ^
+                       static_cast<uint32_t>(niz);
+        if (leak_columns.insert(col).second) {
+          if (rep.leak_columns == 0) rep.first_leak = {nx, node.y, nz};
+          ++rep.leak_columns;
+          if (rep.leaks_reported < MapReachReport::MAX_REPORTED) {
+            rep.leaks[rep.leaks_reported++] = {nx, node.y, nz};
+          }
+        }
+        continue;
+      }
+      // Landing far below is legal (a drop into a pit); it is only a leak if
+      // they never land at all, which drop_to_rest already told us.
+      push(cell_x(rest.x), cell_x(rest.z), rest.y);
     }
   }
   return rep;

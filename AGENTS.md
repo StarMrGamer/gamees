@@ -42,6 +42,7 @@ cmake --build build && ./build/arena_tests
 ./build/arena --simulate --map maps/de_dust2.txt   # gameplay: NaN + wedged-player check
 ./build/arena --netcheck                           # protocol round trip over loopback
 ./build/arena --bench --map maps/de_dust2.txt      # hot path timings
+./build/arena --check-map maps/de_dust2.txt        # can a player fall out of the level?
 ```
 
 All of them exit non-zero on failure. Two things worth knowing:
@@ -51,6 +52,10 @@ All of them exit non-zero on failure. Two things worth knowing:
   actually changed. It is the cheapest possible regression check.
 - Benchmark against `maps/de_dust2.txt`, never `maps/arena.txt`. The default
   map has 45 boxes and hides every scaling problem; de_dust2 has ~2000.
+- `--check-map` walks the level with the real physics and reports any spot a
+  player can reach and fall out of the world from. Run it after editing a map
+  or touching movement/collision - a change to step height or hull size can
+  open leaks in a map that was previously sealed.
 
 ## Performance notes
 

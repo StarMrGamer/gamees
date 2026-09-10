@@ -21,3 +21,29 @@ struct MapCheckReport {
 // conservative: it uses a coarse voxel grid and treats ramps as solid below
 // their surface.
 MapCheckReport map_check_leaks(const Map& map, const Vec3* points, int point_count);
+
+// A stronger check than the voxel flood above, and the one that actually
+// answers "can a player fall out of this map?".
+//
+// It walks the map the way a player does: a breadth-first search over standing
+// positions on a horizontal grid, where every candidate step is resolved with
+// the real move_slide() physics rather than a voxel approximation. That means
+// the player's true hull width, step height and ramp handling all apply, so a
+// gap narrower than the player is correctly *not* a leak.
+//
+// A leak is a reachable position from which stepping to a neighbour drops the
+// player below map.void_y - i.e. somewhere you can walk to and fall out of the
+// world.
+struct MapReachReport {
+  bool ran = false;
+  int reachable_positions = 0;
+  int leak_columns = 0;
+  Vec3 first_leak{};
+  // Up to `capacity` distinct leak positions, for reporting.
+  static constexpr int MAX_REPORTED = 512;
+  Vec3 leaks[MAX_REPORTED];
+  int leaks_reported = 0;
+  int spawns_unsupported = 0;  // spawns that are not standing on anything
+};
+
+MapReachReport map_check_reachable_leaks(const Map& map);

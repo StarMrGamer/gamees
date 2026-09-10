@@ -90,9 +90,45 @@ grid in `src/game/map.cpp` earns its keep.
 ./build/arena --check-map maps/de_dust2.txt --json
 ```
 
-Voxelises the map and flood-fills the empty space inward from the boundary. If
-that flood reaches a spawn, players can walk out of the level. Exits non-zero
-when a spawn leaks.
+Two checks run, and either one failing exits non-zero.
+
+**Seal check** (`leaked`) voxelises the map and flood-fills the empty space
+inward from the boundary. If that flood reaches a spawn, the level is open at
+spawn height.
+
+**Walk check** (`walk_leaks`) is the stronger one, and the one that finds real
+bugs. It breadth-first searches every standing position a player can reach from
+a spawn, resolving each candidate step with the actual `move_slide()` physics
+rather than a voxel approximation. A leak is a reachable spot from which the
+next step drops the player below `map.void_y` - somewhere you can walk to and
+fall out of the world.
+
+Using the real physics matters. The player hull is 0.6 m wide, so a 0.4 m slot
+in the floor is *not* a hole - you straddle it. A point-sampled voxel check
+reports slots like that as leaks, and chasing those false positives wastes more
+time than the check saves. `map_check_ignores_a_gap_narrower_than_the_player`
+pins this down.
+
+Falling out is not fatal - `player_move()` returns anyone below `void_y` to a
+spawn - so a leak is a level bug, not a crash. It still means players can walk
+off the world and get teleported mid-fight.
+
+### Sealing a map that leaks
+
+`maps/de_dust2.txt` was imported from a Source map without its outer terrain
+and skybox, which left 259 reachable spots where you could step off a floor
+edge into open air. The fix was mechanical:
+
+1. Run the walk check to get the leak columns.
+2. Emit a barrier box at each one, tall enough (2 m) that a 1.225 m jump cannot
+   clear it, merging adjacent columns into rectangles.
+3. Re-run - barriers change reachability, so this iterates. de_dust2 converged
+   in two passes: 259 leaks -> 7 -> 0, for 27 added boxes.
+
+Check the reachable-position count before and after. It should drop by a
+percent or two (the lip columns you just blocked). A large drop means a barrier
+walled off a corridor and cut real play space out of the map - de_dust2 went
+47635 -> 46875, or -1.6%.
 
 ## `arena_tests` - filtering
 

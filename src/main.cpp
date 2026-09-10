@@ -385,14 +385,17 @@ int main(int argc, char** argv) {
       return 1;
     }
     if (json_output) {
+      MapReachReport reach = map_check_reachable_leaks(map);
       std::printf("{\"map\":\"%s\",\"name\":\"%s\",\"boxes\":%d,\"ramps\":%d,"
                   "\"spawns\":%d,\"void_y\":%.2f,\"voxel\":%.2f,\"solid_cells\":%lld,"
-                  "\"exterior_cells\":%lld,\"leaked\":%s,\"leaked_spawns\":%d}\n",
+                  "\"exterior_cells\":%lld,\"leaked\":%s,\"leaked_spawns\":%d,"
+                  "\"reachable_positions\":%d,\"walk_leaks\":%d,\"unsupported_spawns\":%d}\n",
                   map_path, map.name, map.box_count, map.ramp_count, map.spawn_count,
                   static_cast<double>(map.void_y), static_cast<double>(rep.voxel_size),
                   rep.solid_cells, rep.exterior_cells, rep.leaked ? "true" : "false",
-                  rep.leaked_points);
-      return rep.leaked ? 1 : 0;
+                  rep.leaked_points, reach.reachable_positions, reach.leak_columns,
+                  reach.spawns_unsupported);
+      return (rep.leaked || reach.leak_columns > 0) ? 1 : 0;
     }
     log_info("map '%s': %d boxes, %d ramps, %d spawns", map_path, map.box_count,
              map.ramp_count, map.spawn_count);
@@ -406,6 +409,23 @@ int main(int argc, char** argv) {
       return 1;
     }
     log_info("no gap to the void: all %d spawns are sealed", rep.point_count);
+
+    MapReachReport reach = map_check_reachable_leaks(map);
+    if (reach.ran) {
+      log_info("walk check: %d reachable standing positions", reach.reachable_positions);
+      if (reach.spawns_unsupported > 0) {
+        log_warn("  %d spawns are not standing on anything", reach.spawns_unsupported);
+      }
+      if (reach.leak_columns > 0) {
+        log_warn("  %d spots you can walk to and fall out of the world:", reach.leak_columns);
+        for (int i = 0; i < reach.leaks_reported; ++i) {
+          log_warn("    x %.1f  y %.1f  z %.1f", static_cast<double>(reach.leaks[i].x),
+                   static_cast<double>(reach.leaks[i].y), static_cast<double>(reach.leaks[i].z));
+        }
+        return 1;
+      }
+      log_info("  no reachable spot drops the player out of the world");
+    }
     return 0;
   }
 

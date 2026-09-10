@@ -61,6 +61,7 @@ add_executable(arena_tests
   tests/test_history.cpp
   tests/test_main.cpp
   tests/test_map.cpp
+  tests/test_map_check.cpp
   tests/test_map_import.cpp
   tests/test_math.cpp
   tests/test_audio.cpp
