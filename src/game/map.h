@@ -6,6 +6,11 @@
 
 constexpr int MAX_MAP_BOXES = 4096;
 constexpr int MAX_MAP_RAMPS = 1024;
+constexpr int MAX_MAP_BRUSHES = 1024;
+// Planes per convex brush. A census of de_dust2 found 88% of its angled solids
+// use four or fewer angled faces; sixteen leaves room for those plus the six
+// axis-aligned bevel planes every brush carries (see MapBrush).
+constexpr int MAX_BRUSH_PLANES = 16;
 constexpr int MAX_SPAWNS = 16;
 
 // Uniform grid over the map's XZ footprint, used to prune collision and
@@ -16,6 +21,7 @@ constexpr int MAP_GRID_DIM = 64;
 constexpr int MAP_GRID_CELLS = MAP_GRID_DIM * MAP_GRID_DIM;
 constexpr int MAP_GRID_MAX_BOX_ENTRIES = 49152;
 constexpr int MAP_GRID_MAX_RAMP_ENTRIES = 16384;
+constexpr int MAP_GRID_MAX_BRUSH_ENTRIES = 32768;
 
 struct MapBox {
   Vec3 min, max;
@@ -42,8 +48,28 @@ struct MapGrid {
   float inv_cell_x, inv_cell_z;
   int32_t box_start[MAP_GRID_CELLS + 1];
   int32_t ramp_start[MAP_GRID_CELLS + 1];
+  int32_t brush_start[MAP_GRID_CELLS + 1];
   uint16_t box_entries[MAP_GRID_MAX_BOX_ENTRIES];
   uint16_t ramp_entries[MAP_GRID_MAX_RAMP_ENTRIES];
+  uint16_t brush_entries[MAP_GRID_MAX_BRUSH_ENTRIES];
+};
+
+// An arbitrary convex solid, stored as the intersection of half-spaces
+// (`dot(n, p) <= d`). This is how brushes are expressed in the source formats
+// the importer reads, so a diagonal wall survives as itself instead of being
+// widened into its bounding box.
+//
+// The plane set always includes the six axis-aligned planes of the brush's own
+// bounding box. They are redundant for a point-in-solid test, but they are what
+// makes the swept-AABB test tight: without them, expanding the angled planes by
+// the player's extent rounds the brush's edges outward and the player collides
+// with thin air near them. Source calls these bevel planes.
+struct MapBrush {
+  Vec3 n[MAX_BRUSH_PLANES];
+  float d[MAX_BRUSH_PLANES];
+  Vec3 min, max;  // cached bounds, for the spatial grid and for meshing
+  Vec3 color;
+  uint8_t plane_count;
 };
 
 struct Map {
@@ -52,6 +78,8 @@ struct Map {
   int box_count;
   MapRamp ramps[MAX_MAP_RAMPS];
   int ramp_count;
+  MapBrush brushes[MAX_MAP_BRUSHES];
+  int brush_count;
   Vec3 spawns[MAX_SPAWNS];
   float spawn_yaws[MAX_SPAWNS];
   int spawn_count;
@@ -71,6 +99,13 @@ struct Map {
 // Builds `out->grid` from the map's boxes and ramps. map_parse() calls this
 // already; only call it directly after mutating geometry by hand.
 void map_build_grid(Map* out);
+
+// Fills in a brush's cached bounds from its plane set, and appends the six
+// axis-aligned bevel planes. Returns false if the planes do not bound a solid.
+bool map_brush_finalize(MapBrush* brush);
+
+// True when `p` is inside the brush (on the surface counts as inside).
+bool map_brush_contains(const MapBrush& b, Vec3 p);
 
 bool map_parse(const char* text, Map* out);
 bool map_load(const char* path, Map* out);

@@ -526,7 +526,16 @@ static Vec3 to_arena_dir(Vec3 n) {
 // AABB of the brush's convex hull. For text maps the plane orientation is
 // unknown, so an interior point (average of face vertices) picks which side is
 // solid; compiled BSPs give outward planes directly.
-static bool brush_aabb(const SourceBrush& brush, float scale, Vec3* mn, Vec3* mx) {
+// Same solve as brush_aabb, but also returns the plane set oriented the way the
+// engine wants it (solid is dot(n, p) <= d). Orientation is the fiddly part:
+// Source usually stores outward planes but not always, so for plane-only
+// brushes both readings are solved and the tighter one wins, and for
+// point-defined faces each plane is oriented against an interior point.
+static bool brush_solve(const SourceBrush& brush, float scale, Vec3* mn, Vec3* mx,
+                        std::vector<Plane>* oriented);
+
+static bool brush_solve_impl(const SourceBrush& brush, float scale, Vec3* mn, Vec3* mx,
+                             std::vector<Plane>* oriented) {
   if (brush.faces.size() < 4) return false;
 
   std::vector<Plane> planes;
@@ -579,13 +588,21 @@ static bool brush_aabb(const SourceBrush& brush, float scale, Vec3* mn, Vec3* mx
     auto volume = [](Vec3 lo, Vec3 hi) {
       return (hi.x - lo.x) * (hi.y - lo.y) * (hi.z - lo.z);
     };
+    auto take = [&](bool outward) {
+      if (!oriented) return;
+      oriented->clear();
+      oriented->reserve(planes.size());
+      for (const Plane& p : planes) {
+        oriented->push_back(outward ? p : Plane{-p.n, -p.d});
+      }
+    };
     if (ok_a && ok_b) {
-      if (volume(lo_b, hi_b) < volume(lo_a, hi_a)) { *mn = lo_b; *mx = hi_b; }
-      else { *mn = lo_a; *mx = hi_a; }
+      if (volume(lo_b, hi_b) < volume(lo_a, hi_a)) { *mn = lo_b; *mx = hi_b; take(false); }
+      else { *mn = lo_a; *mx = hi_a; take(true); }
       return true;
     }
-    if (ok_a) { *mn = lo_a; *mx = hi_a; return true; }
-    if (ok_b) { *mn = lo_b; *mx = hi_b; return true; }
+    if (ok_a) { *mn = lo_a; *mx = hi_a; take(true); return true; }
+    if (ok_b) { *mn = lo_b; *mx = hi_b; take(false); return true; }
   } else {
     Vec3 interior{0, 0, 0};
     for (const Vec3& p : points) interior += p;
@@ -595,12 +612,21 @@ static bool brush_aabb(const SourceBrush& brush, float scale, Vec3* mn, Vec3* mx
     for (const Plane& p : planes) {
       halves.push_back(vec3_dot(p.n, interior) - p.d <= 0.0f ? Half{p.n, p.d} : Half{-p.n, -p.d});
     }
-    if (aabb_from_halves(planes, halves, mn, mx)) return true;
+    if (aabb_from_halves(planes, halves, mn, mx)) {
+      if (oriented) {
+        oriented->clear();
+        oriented->reserve(halves.size());
+        for (const Half& h : halves) oriented->push_back({h.a, h.d});
+      }
+      return true;
+    }
     if (aabb_from_halves(planes, halves_for(true), mn, mx)) return true;
     if (aabb_from_halves(planes, halves_for(false), mn, mx)) return true;
   }
 
-  // Last resort: bounding box of the surface points.
+  // Last resort: bounding box of the surface points. No trustworthy plane
+  // orientation came out of this, so the caller must not build a brush.
+  if (oriented) oriented->clear();
   *mn = *mx = points[0];
   for (const Vec3& p : points) {
     mn->x = std::min(mn->x, p.x); mx->x = std::max(mx->x, p.x);
@@ -608,6 +634,12 @@ static bool brush_aabb(const SourceBrush& brush, float scale, Vec3* mn, Vec3* mx
     mn->z = std::min(mn->z, p.z); mx->z = std::max(mx->z, p.z);
   }
   return true;
+}
+
+static bool brush_solve(const SourceBrush& brush, float scale, Vec3* mn, Vec3* mx,
+                        std::vector<Plane>* oriented) {
+  if (oriented) oriented->clear();
+  return brush_solve_impl(brush, scale, mn, mx, oriented);
 }
 
 static std::string lower_ascii(std::string s) {
@@ -673,6 +705,13 @@ struct OutRamp {
   uint8_t dir;
 };
 
+// A convex solid kept as its plane set, so an angled brush survives as itself
+// instead of being widened to its bounding box.
+struct OutBrush {
+  std::vector<Plane> planes;  // oriented so solid is dot(n, p) <= d
+  Vec3 color;
+};
+
 static bool parse_origin(const std::string& text, Vec3* out) {
   float v[3] = {0, 0, 0};
   if (std::sscanf(text.c_str(), "%f %f %f", &v[0], &v[1], &v[2]) != 3) return false;
@@ -700,6 +739,24 @@ static void append_float(std::string* out, float v) {
   char buf[32];
   std::snprintf(buf, sizeof(buf), "%.3f", v);
   out->append(buf);
+}
+
+// Plane components need far more precision than box corners do. At three
+// decimals a normal like (-0.707, 0, -0.707) no longer matches the bevel it is
+// supposed to be, so map_brush_finalize() tries to add a duplicate, overflows
+// MAX_BRUSH_PLANES and rejects the brush - which shows up as a hole in the
+// level. Six decimals round-trips cleanly.
+static void append_plane_float(std::string* out, float v) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.6f", v);
+  out->append(buf);
+}
+
+// The value a plane component will have after being written and read back.
+static float plane_round_trip(float v) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.6f", v);
+  return std::strtof(buf, nullptr);
 }
 
 static bool plane_is_axis_aligned(const Plane& p) {
@@ -742,6 +799,21 @@ bool cell_touches_brush(const std::vector<Plane>& planes, Vec3 lo, Vec3 hi) {
   return true;
 }
 
+// Drops planes that repeat one already in the set; imported brushes often
+// carry duplicate faces, and every slot saved is one the bevels can use.
+void dedupe_planes(std::vector<Plane>* planes) {
+  std::vector<Plane> out;
+  out.reserve(planes->size());
+  for (const Plane& p : *planes) {
+    bool dup = false;
+    for (const Plane& q : out) {
+      if (vec3_dot(p.n, q.n) > 0.9995f && std::fabs(p.d - q.d) < 0.002f) { dup = true; break; }
+    }
+    if (!dup) out.push_back(p);
+  }
+  planes->swap(out);
+}
+
 int axis_divisions(float extent) {
   int n = static_cast<int>(std::ceil(extent / BRUSH_CELL_TARGET));
   if (n < 1) n = 1;
@@ -756,6 +828,7 @@ int axis_divisions(float extent) {
 // it reads and plays as a real slope.
 static void append_brush_boxes(const SourceBrush& brush, float scale, bool subdivide,
                                std::vector<OutBox>& boxes, std::vector<OutRamp>& ramps,
+                               std::vector<OutBrush>& out_brushes,
                                MapImportResult* result) {
   std::vector<Plane> planes;
   planes.reserve(brush.faces.size());
@@ -789,7 +862,8 @@ static void append_brush_boxes(const SourceBrush& brush, float scale, bool subdi
   };
 
   Vec3 mn, mx;
-  if (!brush_aabb(brush, scale, &mn, &mx)) {
+  std::vector<Plane> oriented;
+  if (!brush_solve(brush, scale, &mn, &mx, &oriented)) {
     if (result) ++result->boxes_dropped;
     return;
   }
@@ -857,6 +931,39 @@ static void append_brush_boxes(const SourceBrush& brush, float scale, bool subdi
     if (result) {
       ++result->brushes_approximated;
       result->approx_fill += fill;
+    }
+
+    // Keep the real shape whenever the engine can hold it. This is the whole
+    // point: a diagonal wall stays a diagonal wall instead of becoming the
+    // solid block of its bounding box.
+    if (!oriented.empty() && out_brushes.size() < static_cast<size_t>(MAX_MAP_BRUSHES)) {
+      std::vector<Plane> keep = oriented;
+      dedupe_planes(&keep);
+      // Validate with the engine's own routine rather than a lookalike. A brush
+      // the parser would reject becomes a hole in the level, so "would this
+      // load?" has to be answered by the exact code that will load it.
+      if (static_cast<int>(keep.size()) >= 4 &&
+          static_cast<int>(keep.size()) <= MAX_BRUSH_PLANES) {
+        // Quantise first, then normalise the way the parser will, so the probe
+        // sees byte-for-byte what the loader will see.
+        for (Plane& pl : keep) {
+          pl.n = {plane_round_trip(pl.n.x), plane_round_trip(pl.n.y), plane_round_trip(pl.n.z)};
+          pl.d = plane_round_trip(pl.d);
+        }
+        MapBrush probe{};
+        probe.plane_count = static_cast<uint8_t>(keep.size());
+        for (size_t i = 0; i < keep.size(); ++i) {
+          float len = vec3_length(keep[i].n);
+          if (len < 1e-6f) { probe.plane_count = 0; break; }
+          probe.n[i] = keep[i].n / len;
+          probe.d[i] = keep[i].d / len;
+        }
+        if (probe.plane_count >= 4 && map_brush_finalize(&probe)) {
+          out_brushes.push_back({std::move(keep), color});
+          if (result) ++result->brushes_kept;
+          return;
+        }
+      }
     }
 
     if (fill > 0.9f || !subdivide) {
@@ -1077,6 +1184,7 @@ static bool convert_source(const SourceMap& source, const std::string& name,
 
   std::vector<OutBox> boxes;
   std::vector<OutRamp> ramps;
+  std::vector<OutBrush> out_brushes;
   std::vector<Vec3> spawns;
   std::vector<float> spawn_yaws;
   std::vector<Vec3> health;
@@ -1090,7 +1198,7 @@ static bool convert_source(const SourceMap& source, const std::string& name,
     if (take_brushes) {
       for (const SourceBrush& brush : entity.brushes) {
         if (result) ++result->brushes_seen;
-        append_brush_boxes(brush, options.scale, options.subdivide, boxes, ramps, result);
+        append_brush_boxes(brush, options.scale, options.subdivide, boxes, ramps, out_brushes, result);
       }
     }
 
@@ -1181,6 +1289,18 @@ static bool convert_source(const SourceMap& source, const std::string& name,
       check_map.ramps[i].color = ramps[i].color;
       check_map.ramps[i].dir = ramps[i].dir;
     }
+    check_map.brush_count =
+        static_cast<int>(std::min<size_t>(out_brushes.size(), MAX_MAP_BRUSHES));
+    for (int i = 0; i < check_map.brush_count; ++i) {
+      MapBrush& cb = check_map.brushes[i];
+      cb.plane_count = static_cast<uint8_t>(out_brushes[i].planes.size());
+      for (int k = 0; k < cb.plane_count; ++k) {
+        cb.n[k] = out_brushes[i].planes[k].n;
+        cb.d[k] = out_brushes[i].planes[k].d;
+      }
+      cb.color = out_brushes[i].color;
+      map_brush_finalize(&cb);
+    }
     MapCheckReport rep = map_check_leaks(check_map, spawns.data(), static_cast<int>(spawns.size()));
     if (result && rep.ran && rep.leaked) {
       result->leaks_to_void = true;
@@ -1211,6 +1331,24 @@ static bool convert_source(const SourceMap& source, const std::string& name,
     append_float(&out, b.color.y); out += ' ';
     append_float(&out, b.color.z);
     out += '\n';
+  }
+  if (!out_brushes.empty()) {
+    out += "\n# ---- convex brushes (angled solids, kept as plane sets) ----\n";
+    for (const OutBrush& b : out_brushes) {
+      out += "brush ";
+      append_float(&out, b.color.x); out += ' ';
+      append_float(&out, b.color.y); out += ' ';
+      append_float(&out, b.color.z);
+      out += '\n';
+      for (const Plane& p : b.planes) {
+        out += "plane ";
+        append_plane_float(&out, p.n.x); out += ' ';
+        append_plane_float(&out, p.n.y); out += ' ';
+        append_plane_float(&out, p.n.z); out += ' ';
+        append_plane_float(&out, p.d);
+        out += '\n';
+      }
+    }
   }
   if (!ramps.empty()) {
     static const char* kDirNames[4] = {"+x", "-x", "+z", "-z"};

@@ -3,6 +3,7 @@
 #include "core/log.h"
 
 #include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -23,6 +24,97 @@ static bool path_is_absolute(const char* path) {
   if (!path || !path[0]) return false;
   if (path[0] == '/' || path[0] == '\\') return true;
   return path[1] == ':';  // Windows drive letter
+}
+
+// ---------------------------------------------------------------------------
+// Convex brushes
+// ---------------------------------------------------------------------------
+
+bool map_brush_contains(const MapBrush& b, Vec3 p) {
+  for (int i = 0; i < b.plane_count; ++i) {
+    if (vec3_dot(b.n[i], p) > b.d[i] + 1e-4f) return false;
+  }
+  return true;
+}
+
+namespace {
+
+// The vertex where three planes meet, if they meet in exactly one point.
+bool plane_triple_point(const Vec3& n0, float d0, const Vec3& n1, float d1,
+                        const Vec3& n2, float d2, Vec3* out) {
+  Vec3 c12 = vec3_cross(n1, n2);
+  float det = vec3_dot(n0, c12);
+  if (std::fabs(det) < 1e-7f) return false;
+  Vec3 c20 = vec3_cross(n2, n0);
+  Vec3 c01 = vec3_cross(n0, n1);
+  *out = (c12 * d0 + c20 * d1 + c01 * d2) / det;
+  return true;
+}
+
+}  // namespace
+
+bool map_brush_finalize(MapBrush* brush) {
+  if (!brush || brush->plane_count < 4) return false;
+
+  // Every vertex of the solid is the meeting point of three of its planes, so
+  // enumerating triples and keeping the points that satisfy the whole plane set
+  // recovers the hull's corners - and with them, the bounds.
+  const int count = brush->plane_count;
+  bool any = false;
+  Vec3 lo{0, 0, 0};
+  Vec3 hi{0, 0, 0};
+  for (int i = 0; i < count; ++i) {
+    for (int j = i + 1; j < count; ++j) {
+      for (int k = j + 1; k < count; ++k) {
+        Vec3 v;
+        if (!plane_triple_point(brush->n[i], brush->d[i], brush->n[j], brush->d[j],
+                                brush->n[k], brush->d[k], &v)) {
+          continue;
+        }
+        bool inside = true;
+        for (int m = 0; m < count; ++m) {
+          if (vec3_dot(brush->n[m], v) > brush->d[m] + 1e-3f) { inside = false; break; }
+        }
+        if (!inside) continue;
+        if (!any) {
+          lo = hi = v;
+          any = true;
+        } else {
+          lo.x = v.x < lo.x ? v.x : lo.x;
+          lo.y = v.y < lo.y ? v.y : lo.y;
+          lo.z = v.z < lo.z ? v.z : lo.z;
+          hi.x = v.x > hi.x ? v.x : hi.x;
+          hi.y = v.y > hi.y ? v.y : hi.y;
+          hi.z = v.z > hi.z ? v.z : hi.z;
+        }
+      }
+    }
+  }
+  if (!any) return false;
+  if (hi.x - lo.x < 0.001f || hi.y - lo.y < 0.001f || hi.z - lo.z < 0.001f) return false;
+  brush->min = lo;
+  brush->max = hi;
+
+  // Add the bounding box's own planes as bevels, skipping any the brush already
+  // has. Without these the swept test rounds off the brush's edges.
+  const Vec3 bevel_n[6] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+  const float bevel_d[6] = {hi.x, -lo.x, hi.y, -lo.y, hi.z, -lo.z};
+  for (int b = 0; b < 6; ++b) {
+    bool have = false;
+    for (int i = 0; i < brush->plane_count; ++i) {
+      if (vec3_dot(brush->n[i], bevel_n[b]) > 0.999f &&
+          std::fabs(brush->d[i] - bevel_d[b]) < 0.01f) {
+        have = true;
+        break;
+      }
+    }
+    if (have) continue;
+    if (brush->plane_count >= MAX_BRUSH_PLANES) return false;
+    brush->n[brush->plane_count] = bevel_n[b];
+    brush->d[brush->plane_count] = bevel_d[b];
+    ++brush->plane_count;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -88,7 +180,7 @@ void map_build_grid(Map* out) {
   if (!out) return;
   MapGrid& g = out->grid;
   g.built = false;
-  if (out->box_count <= 0 && out->ramp_count <= 0) return;
+  if (out->box_count <= 0 && out->ramp_count <= 0 && out->brush_count <= 0) return;
 
   GridBounds b{1e30f, 1e30f, -1e30f, -1e30f};
   auto grow = [&](Vec3 mn, Vec3 mx) {
@@ -99,6 +191,7 @@ void map_build_grid(Map* out) {
   };
   for (int i = 0; i < out->box_count; ++i) grow(out->boxes[i].min, out->boxes[i].max);
   for (int i = 0; i < out->ramp_count; ++i) grow(out->ramps[i].min, out->ramps[i].max);
+  for (int i = 0; i < out->brush_count; ++i) grow(out->brushes[i].min, out->brushes[i].max);
 
   // A hair of padding keeps a primitive that sits exactly on the far edge
   // inside the last cell instead of one past it.
@@ -131,6 +224,15 @@ void map_build_grid(Map* out) {
         },
         g.ramp_start, g.ramp_entries);
   }
+  if (ok) {
+    ok = build_bucket_lists(
+        g, out->brush_count, MAP_GRID_MAX_BRUSH_ENTRIES,
+        [m](int i, float* mnx, float* mnz, float* mxx, float* mxz) {
+          *mnx = m->brushes[i].min.x; *mnz = m->brushes[i].min.z;
+          *mxx = m->brushes[i].max.x; *mxz = m->brushes[i].max.z;
+        },
+        g.brush_start, g.brush_entries);
+  }
   // A map too dense for the entry budget simply keeps the brute-force path.
   g.built = ok;
 }
@@ -159,6 +261,19 @@ bool map_parse(const char* text, Map* out) {
   std::istringstream input(text);
   std::string line;
   int line_no = 0;
+  // Planes follow their `brush` line, so the brush is only complete once some
+  // other directive (or the end of the file) turns up.
+  MapBrush* pending_brush = nullptr;
+  auto close_brush = [&](Map* m) -> bool {
+    if (!pending_brush) return true;
+    MapBrush* b = pending_brush;
+    pending_brush = nullptr;
+    if (map_brush_finalize(b)) return true;
+    // Unbounded or degenerate: drop it rather than carrying a broken solid.
+    log_warn("map: dropping brush with %d planes that does not bound a solid", b->plane_count);
+    --m->brush_count;
+    return true;
+  };
   while (std::getline(input, line)) {
     ++line_no;
     size_t comment = line.find('#');
@@ -167,6 +282,8 @@ bool map_parse(const char* text, Map* out) {
     std::istringstream ss(line);
     std::string directive;
     if (!(ss >> directive)) continue;
+
+    if (directive != "plane" && !close_brush(out)) return false;
 
     if (directive == "name") {
       std::string name;
@@ -224,6 +341,44 @@ bool map_parse(const char* text, Map* out) {
       r.max = {v[0] + v[3], v[1] + v[4], v[2] + v[5]};
       r.color = {rgb[0], rgb[1], rgb[2]};
       r.dir = dir_id;
+    } else if (directive == "brush") {
+      if (out->brush_count >= MAX_MAP_BRUSHES) {
+        log_error("map line %d: too many brushes", line_no);
+        return false;
+      }
+      float rgb[3]{};
+      if (!parse_floats(ss, rgb, 3)) {
+        log_error("map line %d: brush requires r g b", line_no);
+        return false;
+      }
+      MapBrush& b = out->brushes[out->brush_count++];
+      std::memset(&b, 0, sizeof(b));
+      b.color = {rgb[0], rgb[1], rgb[2]};
+      pending_brush = &b;
+    } else if (directive == "plane") {
+      if (!pending_brush) {
+        log_error("map line %d: 'plane' outside a brush", line_no);
+        return false;
+      }
+      float v[4]{};
+      if (!parse_floats(ss, v, 4)) {
+        log_error("map line %d: plane requires nx ny nz d", line_no);
+        return false;
+      }
+      Vec3 n{v[0], v[1], v[2]};
+      float len = vec3_length(n);
+      if (len < 1e-6f) {
+        log_error("map line %d: degenerate plane normal", line_no);
+        return false;
+      }
+      if (pending_brush->plane_count >= MAX_BRUSH_PLANES) {
+        log_error("map line %d: brush has too many planes (max %d)", line_no,
+                  MAX_BRUSH_PLANES);
+        return false;
+      }
+      pending_brush->n[pending_brush->plane_count] = n / len;
+      pending_brush->d[pending_brush->plane_count] = v[3] / len;
+      ++pending_brush->plane_count;
     } else if (directive == "spawn") {
       if (out->spawn_count >= MAX_SPAWNS) {
         log_error("map line %d: too many spawns", line_no);
@@ -276,6 +431,8 @@ bool map_parse(const char* text, Map* out) {
     }
   }
 
+  if (!close_brush(out)) return false;
+
   if (out->spawn_count == 0) {
     log_error("map has no spawn points");
     return false;
@@ -293,6 +450,11 @@ bool map_parse(const char* text, Map* out) {
   for (int i = 0; i < out->ramp_count; ++i) {
     min_y = any_geometry ? (out->ramps[i].min.y < min_y ? out->ramps[i].min.y : min_y)
                          : out->ramps[i].min.y;
+    any_geometry = true;
+  }
+  for (int i = 0; i < out->brush_count; ++i) {
+    min_y = any_geometry ? (out->brushes[i].min.y < min_y ? out->brushes[i].min.y : min_y)
+                         : out->brushes[i].min.y;
     any_geometry = true;
   }
   out->void_y = any_geometry ? min_y - 20.0f : -50.0f;

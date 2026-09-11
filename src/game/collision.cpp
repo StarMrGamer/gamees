@@ -54,11 +54,39 @@ bool grid_covers(const MapGrid& g, float x, float z, int* cx, int* cz) {
 
 }  // namespace
 
+// An axis-aligned box overlaps a convex brush when no single plane separates
+// them. Each plane is pushed out by the box's extent along that plane's normal
+// (its support radius), which turns the swept test into a point test against
+// the expanded solid. The brush's bevel planes are what keep this tight near
+// the brush's own edges - see MapBrush.
+bool brush_box_overlap(const MapBrush& b, const Aabb& box) {
+  // Bounds reject first: six compares throws out nearly every candidate the
+  // grid hands us, and only survivors pay for the plane loop.
+  if (box.min.x >= b.max.x || box.max.x <= b.min.x ||
+      box.min.y >= b.max.y || box.max.y <= b.min.y ||
+      box.min.z >= b.max.z || box.max.z <= b.min.z) {
+    return false;
+  }
+  Vec3 center{(box.min.x + box.max.x) * 0.5f, (box.min.y + box.max.y) * 0.5f,
+              (box.min.z + box.max.z) * 0.5f};
+  Vec3 half{(box.max.x - box.min.x) * 0.5f, (box.max.y - box.min.y) * 0.5f,
+            (box.max.z - box.min.z) * 0.5f};
+  for (int i = 0; i < b.plane_count; ++i) {
+    const Vec3& n = b.n[i];
+    float radius = std::fabs(n.x) * half.x + std::fabs(n.y) * half.y + std::fabs(n.z) * half.z;
+    if (vec3_dot(n, center) - radius > b.d[i]) return false;
+  }
+  return true;
+}
+
 bool map_box_overlap(const Map& map, const Aabb& box) {
   const MapGrid& g = map.grid;
   if (!g.built) {
     for (int i = 0; i < map.box_count; ++i) {
       if (aabb_overlap(box, map_box_aabb(map.boxes[i]))) return true;
+    }
+    for (int i = 0; i < map.brush_count; ++i) {
+      if (brush_box_overlap(map.brushes[i], box)) return true;
     }
     return false;
   }
@@ -68,6 +96,9 @@ bool map_box_overlap(const Map& map, const Aabb& box) {
       int cell = z * MAP_GRID_DIM + x;
       for (int32_t e = g.box_start[cell]; e < g.box_start[cell + 1]; ++e) {
         if (aabb_overlap(box, map_box_aabb(map.boxes[g.box_entries[e]]))) return true;
+      }
+      for (int32_t e = g.brush_start[cell]; e < g.brush_start[cell + 1]; ++e) {
+        if (brush_box_overlap(map.brushes[g.brush_entries[e]], box)) return true;
       }
     }
   }
@@ -144,6 +175,37 @@ bool ray_aabb(Vec3 origin, Vec3 dir, const Aabb& box, float max_t, float* t_out)
   return tmin <= max_t;
 }
 
+// Ray against a convex solid: clip the parameter interval by every half-space.
+// Exact, unlike the box approximation it replaces.
+bool ray_brush(const MapBrush& b, Vec3 origin, Vec3 dir, float max_t, float* t_out) {
+  // Same idea for rays: the cached bounds reject most brushes along the walk
+  // before the per-plane interval clip runs.
+  {
+    float t = max_t;
+    if (!ray_aabb(origin, dir, Aabb{b.min, b.max}, max_t, &t)) return false;
+  }
+  float tmin = 0.0f;
+  float tmax = max_t;
+  for (int i = 0; i < b.plane_count; ++i) {
+    float denom = vec3_dot(b.n[i], dir);
+    float dist = b.d[i] - vec3_dot(b.n[i], origin);
+    if (std::fabs(denom) < 1e-7f) {
+      if (dist < 0.0f) return false;  // parallel and outside
+      continue;
+    }
+    float t = dist / denom;
+    if (denom < 0.0f) {
+      if (t > tmin) tmin = t;   // entering
+    } else {
+      if (t < tmax) tmax = t;   // leaving
+    }
+    if (tmin > tmax) return false;
+  }
+  if (tmin > max_t) return false;
+  if (t_out) *t_out = tmin;
+  return true;
+}
+
 static float ray_map_brute(const Map& map, Vec3 origin, Vec3 dir, float max_t) {
   float best = max_t;
   for (int i = 0; i < map.box_count; ++i) {
@@ -159,6 +221,12 @@ static float ray_map_brute(const Map& map, Vec3 origin, Vec3 dir, float max_t) {
       best = t;
     }
   }
+  for (int i = 0; i < map.brush_count; ++i) {
+    float t = max_t;
+    if (ray_brush(map.brushes[i], origin, dir, best, &t) && t < best) {
+      best = t;
+    }
+  }
   return best;
 }
 
@@ -169,7 +237,7 @@ constexpr int RAY_GRID_MIN_PRIMS = 128;
 
 float ray_map(const Map& map, Vec3 origin, Vec3 dir, float max_t) {
   const MapGrid& g = map.grid;
-  if (!g.built || map.box_count + map.ramp_count <= RAY_GRID_MIN_PRIMS) {
+  if (!g.built || map.box_count + map.ramp_count + map.brush_count <= RAY_GRID_MIN_PRIMS) {
     return ray_map_brute(map, origin, dir, max_t);
   }
 
@@ -249,6 +317,12 @@ float ray_map(const Map& map, Vec3 origin, Vec3 dir, float max_t) {
       float t = max_t;
       Aabb a{r.min, r.max};
       if (ray_aabb(origin, dir, a, best, &t) && t < best) best = t;
+    }
+    for (int32_t e = g.brush_start[cell]; e < g.brush_start[cell + 1]; ++e) {
+      float t = max_t;
+      if (ray_brush(map.brushes[g.brush_entries[e]], origin, dir, best, &t) && t < best) {
+        best = t;
+      }
     }
 
     if (t_max_x < t_max_z) {

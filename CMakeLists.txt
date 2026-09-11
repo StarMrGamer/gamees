@@ -56,6 +56,7 @@ target_link_libraries(arena PRIVATE SDL3::SDL3)
 
 add_executable(arena_tests
   tests/test_client.cpp
+  tests/test_brush.cpp
   tests/test_collision.cpp
   tests/test_grid.cpp
   tests/test_history.cpp

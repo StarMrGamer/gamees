@@ -30,7 +30,7 @@ float ramp_surface_at(const MapRamp& r, float x, float z) {
 
 MapCheckReport map_check_leaks(const Map& map, const Vec3* points, int point_count) {
   MapCheckReport rep;
-  if (map.box_count <= 0 && map.ramp_count <= 0) return rep;
+  if (map.box_count <= 0 && map.ramp_count <= 0 && map.brush_count <= 0) return rep;
 
   Vec3 lo{1e30f, 1e30f, 1e30f};
   Vec3 hi{-1e30f, -1e30f, -1e30f};
@@ -40,6 +40,7 @@ MapCheckReport map_check_leaks(const Map& map, const Vec3* points, int point_cou
   };
   for (int i = 0; i < map.box_count; ++i) include(map.boxes[i].min, map.boxes[i].max);
   for (int i = 0; i < map.ramp_count; ++i) include(map.ramps[i].min, map.ramps[i].max);
+  for (int i = 0; i < map.brush_count; ++i) include(map.brushes[i].min, map.brushes[i].max);
 
   // Pick the finest voxel that keeps the grid under a memory cap.
   float voxel = 0.5f;
@@ -90,6 +91,27 @@ MapCheckReport map_check_leaks(const Map& map, const Vec3* points, int point_cou
         float surf = ramp_surface_at(r, cx, cz);
         int y1 = std::min(ny - 1, static_cast<int>(std::floor((surf - org.y) / voxel)));
         for (int y = y0; y <= y1; ++y) grid[static_cast<size_t>(index(x, y, z))] = 1;
+      }
+    }
+  }
+
+  // Mark convex brushes: a cell counts as solid when its centre is inside.
+  for (int i = 0; i < map.brush_count; ++i) {
+    const MapBrush& b = map.brushes[i];
+    int x0 = std::max(0, static_cast<int>(std::floor((b.min.x - org.x) / voxel)));
+    int x1 = std::min(nx - 1, static_cast<int>(std::floor((b.max.x - org.x) / voxel)));
+    int y0 = std::max(0, static_cast<int>(std::floor((b.min.y - org.y) / voxel)));
+    int y1 = std::min(ny - 1, static_cast<int>(std::floor((b.max.y - org.y) / voxel)));
+    int z0 = std::max(0, static_cast<int>(std::floor((b.min.z - org.z) / voxel)));
+    int z1 = std::min(nz - 1, static_cast<int>(std::floor((b.max.z - org.z) / voxel)));
+    for (int z = z0; z <= z1; ++z) {
+      for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+          Vec3 c{org.x + (static_cast<float>(x) + 0.5f) * voxel,
+                 org.y + (static_cast<float>(y) + 0.5f) * voxel,
+                 org.z + (static_cast<float>(z) + 0.5f) * voxel};
+          if (map_brush_contains(b, c)) grid[static_cast<size_t>(index(x, y, z))] = 1;
+        }
       }
     }
   }

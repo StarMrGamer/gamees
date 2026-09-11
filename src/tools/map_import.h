@@ -49,6 +49,8 @@ struct MapImportResult {
   int brushes_exact = 0;
   int brushes_ramped = 0;
   int brushes_approximated = 0;
+  // Angled brushes kept as convex plane sets rather than bounding boxes.
+  int brushes_kept = 0;
   // Mean fraction of each approximated brush's bounding box that was actually
   // solid. 1.0 means no error; 0.5 means half the emitted block is invented.
   float approx_fill = 0.0f;

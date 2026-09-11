@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/math.h"
+#include "game/map.h"
 #include "render/gl_loader.h"
 
 #include <vector>
@@ -31,5 +32,9 @@ struct MeshBuilder {
   void add_box_yaw(Vec3 center, Vec3 size, Vec3 color, float yaw);
   // A wedge with a sloped top rising from min.y to max.y along `dir`.
   void add_ramp(Vec3 mn, Vec3 mx, uint8_t dir, Vec3 color);
+  // A convex brush. Each plane's face polygon is recovered by clipping a quad
+  // on that plane against every other plane, then fanned into triangles.
+  void add_brush(const MapBrush& brush);
   void add_quad(Vec3 a, Vec3 b, Vec3 c, Vec3 d, Vec3 normal, Vec3 color);
+  void add_tri(Vec3 a, Vec3 b, Vec3 c, Vec3 normal, Vec3 color);
 };

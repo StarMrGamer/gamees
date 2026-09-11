@@ -115,39 +115,55 @@ off the world and get teleported mid-fight.
 
 ### Import fidelity, and why a map feels wrong
 
-The engine has two solid primitives: axis-aligned boxes and ramps. When
-importing a real Source map, each brush lands in one of three buckets, and
+The engine has three solid primitives: axis-aligned boxes, ramps, and convex
+brushes. When importing a real Source map each brush lands in one of those, and
 `--import-map` reports the split:
 
 ```
-fidelity: 1021 exact, 326 ramps, 736 approximated to their bounding box
+fidelity: 1021 axis-aligned, 326 ramps, 736 angled
+  angled: 709 kept exactly as convex brushes, 27 carved into boxes
 ```
 
-- **exact** - every face axis-aligned, represented perfectly.
-- **ramps** - one upward-sloping face, becomes a ramp primitive.
-- **approximated** - anything else. These used to collapse to a single bounding
-  box, which seals off whatever was open inside it. On de_dust2 those 736
-  brushes were only **65% solid on average**, so a third of every emitted block
-  was invented geometry - diagonal walls turned their corners into solid, and
-  rooms behind them became unreachable.
+A **convex brush** is stored the way the source format stores it - as a set of
+half-spaces, `dot(n, p) <= d`. That is why an angled wall survives as an angled
+wall. Collision is an expanded-plane test for boxes and an interval clip for
+rays; rendering recovers each face by clipping a quad on that plane against
+every other plane.
 
-The importer now carves those brushes into a small set of boxes that follow the
-real shape (`MapImportOptions::subdivide`). On de_dust2 that is 1673 -> 3617
-boxes, 3900 m3 less invented solid, and about 1300 more standing positions the
-player can reach.
+This matters more than it sounds. Before brushes existed, an angled solid was
+emitted as its *bounding box*: on de_dust2 those 736 brushes were only **65%
+solid on average**, so a third of every emitted block was invented geometry.
+Diagonal walls filled in their corners and the rooms behind them became
+unreachable - which is what "I can't go inside that area" turned out to be.
 
-Cell size is a budget problem, not a quality one. Measure, do not guess:
+Measured on de_dust2, each step of the fix:
 
-| cell | boxes | reachable |
-|------|-------|-----------|
-| none | 1673 | 47635 |
-| 0.35 m | 2651 | 48683 |
-| 0.25 m | 3617 | 48904 |
-| 0.20 m | 4096 (cap) | 48886 |
+| approach | boxes | solid cells | reachable |
+|----------|-------|-------------|-----------|
+| bounding boxes | 1673 | 1849482 | 47635 |
+| carved into boxes (0.25 m) | 3617 | 1818232 | 48904 |
+| **convex brushes** | **1910** | **1795748** | **49137** |
 
-0.20 m hits `MAX_MAP_BOXES`, gets truncated, and comes out *worse* than 0.25 m.
-If you change the box budget, re-run this sweep rather than assuming finer is
-better.
+Brushes win on every axis *and* use half the boxes of carving. Carving stays as
+the fallback for the ~27 solids too complex for `MAX_BRUSH_PLANES` (cylinders
+and arches, which run to 23+ faces).
+
+Two traps worth knowing about, both of which bit during this work:
+
+- **Plane data needs real precision.** Box corners are fine at three decimals;
+  plane normals are not. A normal written as `-0.707` no longer matches the
+  bevel plane it is meant to be, so `map_brush_finalize()` tries to append a
+  duplicate, overflows `MAX_BRUSH_PLANES`, and rejects the brush - and a
+  rejected brush is a hole in the level. Planes are written at six decimals,
+  and the importer validates each brush against the *round-tripped* values.
+- **Validate with the loader's own code.** The importer calls
+  `map_brush_finalize()` on a probe rather than reimplementing the same checks.
+  A lookalike check that disagrees with the parser silently drops geometry.
+
+`bevel planes`: every brush carries the six axis-aligned planes of its own
+bounding box. They are redundant for point-in-solid, but they are what keeps
+the swept-AABB test tight - without them, expanding the angled planes by the
+player's extent rounds the brush's edges outward and you collide with thin air.
 
 ### What NOT to do about walk leaks
 

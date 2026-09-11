@@ -68,3 +68,11 @@ All of them exit non-zero on failure. Two things worth knowing:
 a POD - it is `memset` on load and copied by value - so no `std::vector` or
 owning pointers in it. If the grid ever fails to build the queries silently fall
 back to a full scan, which stays correct and only costs speed.
+
+There are three solid primitives: `MapBox`, `MapRamp`, and `MapBrush` (a convex
+solid stored as half-spaces, used for angled geometry that a box cannot
+express). Anything that walks the world must handle all three - adding a
+primitive to `map_box_overlap` and `ray_map` but forgetting `map_check.cpp`
+makes the leak checker treat that geometry as empty space. Brushes cache their
+bounds specifically so both collision paths can reject on six compares before
+touching the plane loop; keep that early-out.

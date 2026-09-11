@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <vector>
 
 static void setup_mesh(Mesh& m, const Vertex* verts, int count, int capacity, GLenum usage) {
   m.vertex_count = count;
@@ -43,6 +44,12 @@ void mesh_draw(const Mesh& m) {
   if (m.vertex_count <= 0) return;
   glBindVertexArray(m.vao);
   glDrawArrays(GL_TRIANGLES, 0, m.vertex_count);
+}
+
+void MeshBuilder::add_tri(Vec3 a, Vec3 b, Vec3 c, Vec3 normal, Vec3 color) {
+  verts.push_back({a, normal, color});
+  verts.push_back({b, normal, color});
+  verts.push_back({c, normal, color});
 }
 
 void MeshBuilder::add_quad(Vec3 a, Vec3 b, Vec3 c, Vec3 d, Vec3 normal, Vec3 color) {
@@ -103,7 +110,7 @@ void MeshBuilder::add_ramp(Vec3 mn, Vec3 mx, uint8_t dir, Vec3 color) {
     n = vec3_normalize(n);
     Vec3 fc = tri ? (a + b + d) / 3.0f : (a + b + d + e) * 0.25f;
     if (vec3_dot(n, fc - center) < 0.0f) n = -n;
-    if (tri) add_quad(a, b, d, d, n, color);
+    if (tri) add_tri(a, b, d, n, color);
     else add_quad(a, b, d, e, n, color);
   };
   face(v0, v1, v4, v3, false);  // bottom
@@ -128,4 +135,58 @@ void MeshBuilder::add_box(Vec3 mn, Vec3 mx, Vec3 color) {
   add_quad(p001, p101, p100, p000, {0, -1, 0}, color);
   add_quad(p101, p001, p011, p111, {0, 0, 1}, color);
   add_quad(p000, p100, p110, p010, {0, 0, -1}, color);
+}
+
+void MeshBuilder::add_brush(const MapBrush& brush) {
+  Vec3 center{(brush.min.x + brush.max.x) * 0.5f, (brush.min.y + brush.max.y) * 0.5f,
+              (brush.min.z + brush.max.z) * 0.5f};
+  Vec3 span = brush.max - brush.min;
+  // Generous enough that the starting quad always covers the real face, small
+  // enough that clipping stays numerically well behaved.
+  float radius = vec3_length(span) + 1.0f;
+
+  std::vector<Vec3> poly;
+  std::vector<Vec3> clipped;
+  for (int i = 0; i < brush.plane_count; ++i) {
+    const Vec3 n = brush.n[i];
+    // Any two vectors spanning the plane will do; pick a seed that is not
+    // parallel to the normal.
+    Vec3 seed = std::fabs(n.y) > 0.9f ? Vec3{1.0f, 0.0f, 0.0f} : Vec3{0.0f, 1.0f, 0.0f};
+    Vec3 u = vec3_normalize(vec3_cross(seed, n));
+    Vec3 v = vec3_cross(n, u);
+    Vec3 on_plane = center + n * (brush.d[i] - vec3_dot(n, center));
+
+    poly.clear();
+    poly.push_back(on_plane + (u * -radius) + (v * -radius));
+    poly.push_back(on_plane + (u * radius) + (v * -radius));
+    poly.push_back(on_plane + (u * radius) + (v * radius));
+    poly.push_back(on_plane + (u * -radius) + (v * radius));
+
+    // Sutherland-Hodgman against every other half-space.
+    for (int j = 0; j < brush.plane_count && poly.size() >= 3; ++j) {
+      if (j == i) continue;
+      clipped.clear();
+      for (size_t k = 0; k < poly.size(); ++k) {
+        const Vec3& a = poly[k];
+        const Vec3& b = poly[(k + 1) % poly.size()];
+        float da = vec3_dot(brush.n[j], a) - brush.d[j];
+        float db = vec3_dot(brush.n[j], b) - brush.d[j];
+        bool a_in = da <= 1e-4f;
+        bool b_in = db <= 1e-4f;
+        if (a_in) clipped.push_back(a);
+        if (a_in != b_in) {
+          float t = da / (da - db);
+          clipped.push_back(a + (b - a) * t);
+        }
+      }
+      poly.swap(clipped);
+    }
+    if (poly.size() < 3) continue;  // this plane contributes no face
+
+    // Fan the face into triangles. Using add_quad here would emit a degenerate
+    // second triangle per step and double the vertex count for no pixels.
+    for (size_t k = 1; k + 1 < poly.size(); ++k) {
+      add_tri(poly[0], poly[k], poly[k + 1], n, brush.color);
+    }
+  }
 }

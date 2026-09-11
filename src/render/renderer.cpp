@@ -111,6 +111,9 @@ bool renderer_init(Renderer& r, const Map& map) {
   for (int i = 0; i < map.ramp_count; ++i) {
     world.add_ramp(map.ramps[i].min, map.ramps[i].max, map.ramps[i].dir, map.ramps[i].color);
   }
+  for (int i = 0; i < map.brush_count; ++i) {
+    world.add_brush(map.brushes[i]);
+  }
   r.arena = mesh_create(world.verts.data(), static_cast<int>(world.verts.size()));
 
   r.dynamic_boxes = mesh_create_dynamic(RENDERER_MAX_DYNAMIC_BOXES * RENDERER_BOX_VERTS);

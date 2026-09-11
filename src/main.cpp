@@ -380,11 +380,17 @@ int main(int argc, char** argv) {
              result.ramps_written, result.boxes_dropped + result.boxes_truncated,
              result.truncated ? " [truncated]" : "");
     log_info("  %d spawns, %d health", result.spawns, result.health);
-    log_info("  fidelity: %d exact, %d ramps, %d approximated to their bounding box",
+    log_info("  fidelity: %d axis-aligned, %d ramps, %d angled",
              result.brushes_exact, result.brushes_ramped, result.brushes_approximated);
     if (result.brushes_approximated > 0) {
-      log_info("    approximated brushes are %.0f%% solid on average - the rest is"
-               " filled-in space", static_cast<double>(result.approx_fill) * 100.0);
+      int fallback = result.brushes_approximated - result.brushes_kept;
+      log_info("    angled: %d kept exactly as convex brushes, %d carved into boxes",
+               result.brushes_kept, fallback);
+      if (fallback > 0) {
+        log_info("      (a carved brush only fills %.0f%% of its bounding box on average,"
+                 " so carving beats blocking it out)",
+                 static_cast<double>(result.approx_fill) * 100.0);
+      }
     }
     if (result.leaks_to_void) {
       log_warn("  %d/%d spawns connect to the void (first at %.1f %.1f %.1f)",
