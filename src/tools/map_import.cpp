@@ -110,8 +110,20 @@ struct SourceEntity {
   }
 };
 
+// A quad of the displacement surface, already in arena space. Displacements
+// are not brushes - they are a heightfield lump the brush reader cannot see -
+// so they arrive as ready-made patches.
+struct SourcePatch {
+  Vec3 corner[4];   // in grid order, so (0,1,2,3) walks the quad
+  std::string texture;
+  int disp = 0;     // which displacement this cell belongs to
+  int gi = 0, gj = 0;   // its position in that displacement's grid
+  int rows = 0, cols = 0;
+};
+
 struct SourceMap {
   std::vector<SourceEntity> entities;
+  std::vector<SourcePatch> patches;
 };
 
 // ---------------------------------------------------------------------------
@@ -334,6 +346,12 @@ enum {
   BSP_LUMP_TEXINFO = 6,
   BSP_LUMP_BRUSHES = 18,
   BSP_LUMP_BRUSHSIDES = 19,
+  BSP_LUMP_VERTEXES = 3,
+  BSP_LUMP_FACES = 7,
+  BSP_LUMP_EDGES = 12,
+  BSP_LUMP_SURFEDGES = 13,
+  BSP_LUMP_DISPINFO = 26,
+  BSP_LUMP_DISP_VERTS = 33,
   BSP_LUMP_TEXDATA_STRING_DATA = 43,
   BSP_LUMP_TEXDATA_STRING_TABLE = 44,
 };
@@ -395,12 +413,16 @@ static bool parse_bsp(const uint8_t* d, size_t n, SourceMap* out, std::string* e
     int firstside = rd_i32(bp);
     int numsides = rd_i32(bp + 4);
     int contents = rd_i32(bp + 8);
-    // Skip empty brushes and volumes that must not become solid walls: area
-    // portals would seal doorways, origins are markers, and liquids aren't
-    // floor you can stand on.
+    // Only CONTENTS_SOLID is world geometry. Everything else that happens to
+    // be a brush is either invisible in the original or not a wall at all, and
+    // importing it puts blocks in the level that no player ever saw: clip
+    // brushes (invisible walls the mapper used to shape movement), glass and
+    // grates, area portals, origin markers, liquids. On de_dust2 that was 75
+    // brushes, including 67 player-clips.
+    constexpr int kSolid = 0x1;
     constexpr int kDropContents =
         0x8000 /*areaportal*/ | 0x1000000 /*origin*/ | 0x10 /*slime*/ | 0x20 /*water*/;
-    if (contents == 0 || (contents & kDropContents)) continue;
+    if (!(contents & kSolid) || (contents & kDropContents)) continue;
     if (numsides <= 0 || numsides > 1024) continue;
     SourceBrush brush;
     for (int s = 0; s < numsides; ++s) {
@@ -435,6 +457,124 @@ static bool parse_bsp(const uint8_t* d, size_t n, SourceMap* out, std::string* e
     if (!skip && brush.faces.size() >= 4) world.brushes.push_back(std::move(brush));
   }
   out->entities.push_back(std::move(world));
+
+  // ------------------------------------------------------------------
+  // Displacements
+  //
+  // Terrain in a Source map is not a brush. It is a heightfield: a base
+  // quad face plus a grid of per-vertex offsets in a separate lump. The
+  // brush reader above cannot see any of it, so on de_dust2 every sandy
+  // slope and open area - 69 patches, ~8000 triangles - was simply absent,
+  // leaving the holes players fell through.
+  // ------------------------------------------------------------------
+  {
+    const int disp_count = static_cast<int>(lump_len(BSP_LUMP_DISPINFO) / 176);
+    const int dvert_count = static_cast<int>(lump_len(BSP_LUMP_DISP_VERTS) / 20);
+    const int face_count = static_cast<int>(lump_len(BSP_LUMP_FACES) / 56);
+    const int vert_count = static_cast<int>(lump_len(BSP_LUMP_VERTEXES) / 12);
+    const int edge_count = static_cast<int>(lump_len(BSP_LUMP_EDGES) / 4);
+    const int surfedge_count = static_cast<int>(lump_len(BSP_LUMP_SURFEDGES) / 4);
+
+    auto vertex_at = [&](int i, Vec3* out_v) {
+      const uint8_t* vp = nullptr;
+      if (i < 0 || i >= vert_count) return false;
+      if (!at(BSP_LUMP_VERTEXES, static_cast<size_t>(i) * 12, 12, &vp)) return false;
+      *out_v = {rd_f32(vp), rd_f32(vp + 4), rd_f32(vp + 8)};
+      return true;
+    };
+    // A surfedge is a signed index: negative means traverse the edge backwards.
+    auto face_vertex = [&](int firstedge, int k, Vec3* out_v) {
+      int se_index = firstedge + k;
+      if (se_index < 0 || se_index >= surfedge_count) return false;
+      const uint8_t* sp = nullptr;
+      if (!at(BSP_LUMP_SURFEDGES, static_cast<size_t>(se_index) * 4, 4, &sp)) return false;
+      int32_t se = rd_i32(sp);
+      int edge_index = se >= 0 ? se : -se;
+      if (edge_index < 0 || edge_index >= edge_count) return false;
+      const uint8_t* ep = nullptr;
+      if (!at(BSP_LUMP_EDGES, static_cast<size_t>(edge_index) * 4, 4, &ep)) return false;
+      uint16_t a = rd_u16(ep);
+      uint16_t b = rd_u16(ep + 2);
+      return vertex_at(se >= 0 ? a : b, out_v);
+    };
+
+    for (int di = 0; di < disp_count; ++di) {
+      const uint8_t* dp = nullptr;
+      if (!at(BSP_LUMP_DISPINFO, static_cast<size_t>(di) * 176, 176, &dp)) break;
+      Vec3 start_pos{rd_f32(dp), rd_f32(dp + 4), rd_f32(dp + 8)};
+      int vert_start = rd_i32(dp + 12);
+      int power = rd_i32(dp + 20);
+      int map_face = static_cast<int>(rd_u16(dp + 36));
+      if (power < 2 || power > 4) continue;
+      if (map_face < 0 || map_face >= face_count) continue;
+
+      const uint8_t* fp = nullptr;
+      if (!at(BSP_LUMP_FACES, static_cast<size_t>(map_face) * 56, 56, &fp)) continue;
+      int firstedge = rd_i32(fp + 4);
+      int numedges = static_cast<int>(static_cast<int16_t>(rd_u16(fp + 8)));
+      int16_t texinfo = static_cast<int16_t>(rd_u16(fp + 10));
+      if (numedges != 4) continue;  // a displacement always sits on a quad
+
+      Vec3 c[4];
+      bool ok = true;
+      for (int k = 0; k < 4 && ok; ++k) ok = face_vertex(firstedge, k, &c[k]);
+      if (!ok) continue;
+
+      // startPosition names which corner the grid starts from; rotate to it.
+      int best = 0;
+      float best_d = 1e30f;
+      for (int k = 0; k < 4; ++k) {
+        Vec3 diff = c[k] - start_pos;
+        float d2 = vec3_dot(diff, diff);
+        if (d2 < best_d) { best_d = d2; best = k; }
+      }
+      Vec3 q[4];
+      for (int k = 0; k < 4; ++k) q[k] = c[(best + k) & 3];
+
+      const int size = (1 << power) + 1;
+      std::vector<Vec3> grid(static_cast<size_t>(size) * size);
+      bool grid_ok = true;
+      for (int i = 0; i < size && grid_ok; ++i) {
+        float fi = static_cast<float>(i) / static_cast<float>(size - 1);
+        Vec3 left = q[0] + (q[1] - q[0]) * fi;
+        Vec3 right = q[3] + (q[2] - q[3]) * fi;
+        for (int j = 0; j < size; ++j) {
+          float fj = static_cast<float>(j) / static_cast<float>(size - 1);
+          Vec3 base = left + (right - left) * fj;
+          int idx = i * size + j;
+          int vi = vert_start + idx;
+          if (vi < 0 || vi >= dvert_count) { grid_ok = false; break; }
+          const uint8_t* vp = nullptr;
+          if (!at(BSP_LUMP_DISP_VERTS, static_cast<size_t>(vi) * 20, 20, &vp)) {
+            grid_ok = false;
+            break;
+          }
+          Vec3 offset{rd_f32(vp), rd_f32(vp + 4), rd_f32(vp + 8)};
+          float dist = rd_f32(vp + 12);
+          grid[static_cast<size_t>(idx)] = base + offset * dist;
+        }
+      }
+      if (!grid_ok) continue;
+
+      std::string tex = material(texinfo);
+      for (int i = 0; i + 1 < size; ++i) {
+        for (int j = 0; j + 1 < size; ++j) {
+          SourcePatch patch;
+          patch.disp = di;
+          patch.gi = i;
+          patch.gj = j;
+          patch.rows = size - 1;
+          patch.cols = size - 1;
+          patch.corner[0] = grid[static_cast<size_t>(i) * size + j];
+          patch.corner[1] = grid[static_cast<size_t>(i + 1) * size + j];
+          patch.corner[2] = grid[static_cast<size_t>(i + 1) * size + (j + 1)];
+          patch.corner[3] = grid[static_cast<size_t>(i) * size + (j + 1)];
+          patch.texture = tex;
+          out->patches.push_back(std::move(patch));
+        }
+      }
+    }
+  }
 
   // The entity lump is text with NUL separators between tokens.
   uint32_t ent_len = lump_len(BSP_LUMP_ENTITIES);
@@ -702,7 +842,8 @@ struct OutBox {
 struct OutRamp {
   Vec3 mn, mx;
   Vec3 color;
-  uint8_t dir;
+  Vec3 slope_n;
+  float slope_d;
 };
 
 // A convex solid kept as its plane set, so an angled brush survives as itself
@@ -889,15 +1030,13 @@ static void append_brush_boxes(const SourceBrush& brush, float scale, bool subdi
   if (slope && non_axis <= 2 && std::fabs(slope->n.y) > 0.2f &&
       std::fabs(slope->n.y) < 0.98f && mx.y - mn.y > 0.05f &&
       ramps.size() < static_cast<size_t>(MAX_MAP_RAMPS)) {
-    // The surface rises in the direction opposite the slope's horizontal
-    // normal component; snap to the dominant cardinal axis. (Point-based text
-    // maps may wind either way, so orient the normal upward first.)
-    Vec3 n = slope->n.y < 0.0f ? Vec3{-slope->n.x, -slope->n.y, -slope->n.z} : slope->n;
-    Vec3 asc = {-n.x, 0.0f, -n.z};
-    uint8_t dir;
-    if (std::fabs(asc.x) >= std::fabs(asc.z)) dir = asc.x >= 0.0f ? 0 : 1;
-    else dir = asc.z >= 0.0f ? 2 : 3;
-    ramps.push_back({mn, mx, color, dir});
+    // Store the surface plane as it actually is. Snapping it to a cardinal
+    // direction and re-deriving it from the bounding box is what used to put
+    // slopes in the wrong place.
+    Vec3 sn = slope->n;
+    float sd = slope->d;
+    if (sn.y < 0.0f) { sn = -sn; sd = -sd; }
+    ramps.push_back({mn, mx, color, sn, sd});
     if (result) ++result->brushes_ramped;
     return;
   }
@@ -1036,6 +1175,142 @@ static void append_brush_boxes(const SourceBrush& brush, float scale, bool subdi
 
 // True if a player standing at `s` (feet on the ground) would be inside solid
 // geometry - a box, or a ramp whose surface is more than a step above the feet.
+// Surface height of a ramp at (x, z), clamped into its bounds - the same rule
+// the engine applies in map_ramp_surface().
+static float ramp_surface_of(const OutRamp& r, float x, float z) {
+  if (r.slope_n.y > -1e-6f && r.slope_n.y < 1e-6f) return r.mn.y;
+  float y = (r.slope_d - r.slope_n.x * x - r.slope_n.z * z) / r.slope_n.y;
+  return std::max(r.mn.y, std::min(r.mx.y, y));
+}
+
+// Turn displacement patches into walkable slopes.
+//
+// Only MapRamp gives a surface the player can walk up; a convex brush would be
+// a wall. So each patch becomes a ramp: its bounds, plus the best-fit plane of
+// its four corners. Patches are emitted per grid cell, which is far too many to
+// keep one-to-one, so neighbouring cells that share a plane are merged first -
+// flat ground collapses to a handful of ramps and only genuinely curved terrain
+// costs many.
+// `world_mn`/`world_mx` bound the playable area (the solid brushes). Terrain
+// outside it is the 3D skybox: Source builds distant scenery as a separate
+// miniature region stored in the same lumps, and importing it drops a copy of
+// the horizon into the level hundreds of metres from anything playable.
+static void patches_to_ramps(const std::vector<SourcePatch>& patches, float scale,
+                             float thickness, Vec3 world_mn, Vec3 world_mx,
+                             std::vector<OutRamp>& ramps, MapImportResult* result) {
+  const float kMargin = 8.0f;
+  struct Cell {
+    Vec3 mn, mx;
+    Vec3 n;
+    float d;
+    Vec3 color;
+    bool valid = false;
+    bool used = false;
+  };
+
+  // Cells only ever merge with their neighbours inside the same displacement.
+  // Merging by "overlaps the bounding rectangle" instead fuses patches from
+  // opposite ends of the level into one enormous slab.
+  size_t at = 0;
+  while (at < patches.size()) {
+    const int disp = patches[at].disp;
+    const int rows = patches[at].rows;
+    const int cols = patches[at].cols;
+    size_t end_idx = at;
+    while (end_idx < patches.size() && patches[end_idx].disp == disp) ++end_idx;
+    if (rows <= 0 || cols <= 0) { at = end_idx; continue; }
+
+    std::vector<Cell> grid(static_cast<size_t>(rows) * cols);
+    for (size_t k = at; k < end_idx; ++k) {
+      const SourcePatch& p = patches[k];
+      if (p.gi >= rows || p.gj >= cols) continue;
+      Vec3 v[4];
+      for (int c = 0; c < 4; ++c) v[c] = to_arena(p.corner[c], scale);
+      Vec3 n1 = vec3_cross(v[1] - v[0], v[2] - v[0]);
+      Vec3 n2 = vec3_cross(v[2] - v[0], v[3] - v[0]);
+      Vec3 n = n1 + n2;
+      float len = vec3_length(n);
+      if (len < 1e-9f) continue;
+      n = n / len;
+      if (n.y < 0.0f) n = -n;
+      // Near-vertical cells are cliff faces, not floor. A ramp cannot express
+      // one, and forcing it makes a surface that shoots off to infinity.
+      if (n.y < 0.05f) continue;
+
+      Cell& c = grid[static_cast<size_t>(p.gi) * cols + p.gj];
+      c.mn = c.mx = v[0];
+      for (int q = 1; q < 4; ++q) {
+        c.mn.x = std::min(c.mn.x, v[q].x); c.mx.x = std::max(c.mx.x, v[q].x);
+        c.mn.y = std::min(c.mn.y, v[q].y); c.mx.y = std::max(c.mx.y, v[q].y);
+        c.mn.z = std::min(c.mn.z, v[q].z); c.mx.z = std::max(c.mx.z, v[q].z);
+      }
+      // Reject anything outside the playable bounds (3D skybox scenery).
+      Vec3 mid{(c.mn.x + c.mx.x) * 0.5f, (c.mn.y + c.mx.y) * 0.5f, (c.mn.z + c.mx.z) * 0.5f};
+      if (mid.x < world_mn.x - kMargin || mid.x > world_mx.x + kMargin ||
+          mid.y < world_mn.y - kMargin || mid.y > world_mx.y + kMargin ||
+          mid.z < world_mn.z - kMargin || mid.z > world_mx.z + kMargin) {
+        if (result) ++result->patches_outside;
+        continue;
+      }
+      c.mn.y -= thickness;
+      c.n = n;
+      c.d = vec3_dot(n, (v[0] + v[1] + v[2] + v[3]) / 4.0f);
+      c.color = texture_color(lower_ascii(p.texture));
+      c.valid = true;
+    }
+
+    // Terrain is a smooth heightfield, so neighbouring cells rarely share a
+    // plane exactly. A few degrees of slack merges the gentle areas into big
+    // ramps while leaving genuinely curved ground at cell resolution.
+    auto same_plane = [](const Cell& a, const Cell& b) {
+      return a.valid && b.valid && vec3_dot(a.n, b.n) > 0.9986f &&
+             std::fabs(a.d - b.d) < 0.06f;
+    };
+
+    for (int i = 0; i < rows; ++i) {
+      for (int j = 0; j < cols; ++j) {
+        Cell& seed = grid[static_cast<size_t>(i) * cols + j];
+        if (!seed.valid || seed.used) continue;
+        int j1 = j;
+        while (j1 + 1 < cols) {
+          Cell& nxt = grid[static_cast<size_t>(i) * cols + (j1 + 1)];
+          if (nxt.used || !same_plane(seed, nxt)) break;
+          ++j1;
+        }
+        int i1 = i;
+        for (;;) {
+          if (i1 + 1 >= rows) break;
+          bool row_ok = true;
+          for (int jj = j; jj <= j1; ++jj) {
+            Cell& nxt = grid[static_cast<size_t>(i1 + 1) * cols + jj];
+            if (nxt.used || !same_plane(seed, nxt)) { row_ok = false; break; }
+          }
+          if (!row_ok) break;
+          ++i1;
+        }
+        Vec3 mn = seed.mn;
+        Vec3 mx = seed.mx;
+        for (int ii = i; ii <= i1; ++ii) {
+          for (int jj = j; jj <= j1; ++jj) {
+            Cell& c = grid[static_cast<size_t>(ii) * cols + jj];
+            c.used = true;
+            mn.x = std::min(mn.x, c.mn.x); mx.x = std::max(mx.x, c.mx.x);
+            mn.y = std::min(mn.y, c.mn.y); mx.y = std::max(mx.y, c.mx.y);
+            mn.z = std::min(mn.z, c.mn.z); mx.z = std::max(mx.z, c.mx.z);
+          }
+        }
+        if (ramps.size() >= static_cast<size_t>(MAX_MAP_RAMPS)) {
+          if (result) ++result->patches_dropped;
+          continue;
+        }
+        ramps.push_back({mn, mx, seed.color, seed.n, seed.d});
+        if (result) ++result->patches_kept;
+      }
+    }
+    at = end_idx;
+  }
+}
+
 static bool spawn_blocked(const std::vector<OutBox>& boxes, const std::vector<OutRamp>& ramps,
                           Vec3 s) {
   const float hw = PLAYER_HALF_W;
@@ -1050,17 +1325,7 @@ static bool spawn_blocked(const std::vector<OutBox>& boxes, const std::vector<Ou
   }
   for (const OutRamp& r : ramps) {
     if (s.x < r.mn.x || s.x > r.mx.x || s.z < r.mn.z || s.z > r.mx.z) continue;
-    float sx = r.mx.x - r.mn.x;
-    float sz = r.mx.z - r.mn.z;
-    float t = 0.0f;
-    switch (r.dir) {
-      case 0: t = sx > 0.0f ? (s.x - r.mn.x) / sx : 0.0f; break;
-      case 1: t = sx > 0.0f ? (r.mx.x - s.x) / sx : 0.0f; break;
-      case 2: t = sz > 0.0f ? (s.z - r.mn.z) / sz : 0.0f; break;
-      default: t = sz > 0.0f ? (r.mx.z - s.z) / sz : 0.0f; break;
-    }
-    float surf = r.mn.y + (r.mx.y - r.mn.y) * clampf(t, 0.0f, 1.0f);
-    if (surf > s.y + STEP_HEIGHT) return true;
+    if (ramp_surface_of(r, s.x, s.z) > s.y + STEP_HEIGHT) return true;
   }
   return false;
 }
@@ -1272,6 +1537,64 @@ static bool convert_source(const SourceMap& source, const std::string& name,
     boxes = std::move(kept);
   }
 
+  // The playable area is whatever the *pruned* boxes span. Only boxes go
+  // through filter_disconnected(), so they are the one geometry list already
+  // free of 3D-skybox leftovers; deriving the bounds from ramps or brushes
+  // instead lets a single stray skybox slope stretch them across the map.
+  Vec3 wmn{1e30f, 1e30f, 1e30f};
+  Vec3 wmx{-1e30f, -1e30f, -1e30f};
+  for (const OutBox& b : boxes) {
+    wmn.x = std::min(wmn.x, b.mn.x); wmn.y = std::min(wmn.y, b.mn.y);
+    wmn.z = std::min(wmn.z, b.mn.z);
+    wmx.x = std::max(wmx.x, b.mx.x); wmx.y = std::max(wmx.y, b.mx.y);
+    wmx.z = std::max(wmx.z, b.mx.z);
+  }
+  const bool have_bounds = wmn.x <= wmx.x;
+
+  // Ramps and brushes are not pruned, so drop the skybox ones the same way.
+  if (have_bounds) {
+    const float kOutside = 8.0f;
+    auto outside = [&](Vec3 mn, Vec3 mx) {
+      Vec3 mid{(mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f, (mn.z + mx.z) * 0.5f};
+      return mid.x < wmn.x - kOutside || mid.x > wmx.x + kOutside ||
+             mid.y < wmn.y - kOutside || mid.y > wmx.y + kOutside ||
+             mid.z < wmn.z - kOutside || mid.z > wmx.z + kOutside;
+    };
+    size_t before = ramps.size() + out_brushes.size();
+    std::vector<OutRamp> kept_ramps;
+    kept_ramps.reserve(ramps.size());
+    for (const OutRamp& r : ramps) {
+      if (!outside(r.mn, r.mx)) kept_ramps.push_back(r);
+    }
+    ramps.swap(kept_ramps);
+    std::vector<OutBrush> kept_brushes;
+    kept_brushes.reserve(out_brushes.size());
+    for (const OutBrush& b : out_brushes) {
+      Vec3 bmn{1e30f, 1e30f, 1e30f};
+      Vec3 bmx{-1e30f, -1e30f, -1e30f};
+      MapBrush probe{};
+      probe.plane_count = static_cast<uint8_t>(b.planes.size());
+      for (size_t i = 0; i < b.planes.size(); ++i) {
+        probe.n[i] = b.planes[i].n;
+        probe.d[i] = b.planes[i].d;
+      }
+      if (map_brush_finalize(&probe)) { bmn = probe.min; bmx = probe.max; }
+      if (bmn.x > bmx.x || !outside(bmn, bmx)) kept_brushes.push_back(b);
+    }
+    out_brushes.swap(kept_brushes);
+    if (result) {
+      result->skybox_dropped =
+          static_cast<int>(before - (ramps.size() + out_brushes.size()));
+    }
+  }
+
+  // Displacement terrain, converted after the brushes so it shares the ramp
+  // budget with them.
+  if (result) result->patches_seen = static_cast<int>(source.patches.size());
+  if (have_bounds) {
+    patches_to_ramps(source.patches, options.scale, 0.6f, wmn, wmx, ramps, result);
+  }
+
   // Leak check: does the outside connect to any spawn? Build a temporary Map
   // and flood-fill the empty space from beyond the geometry.
   {
@@ -1287,7 +1610,8 @@ static bool convert_source(const SourceMap& source, const std::string& name,
       check_map.ramps[i].min = ramps[i].mn;
       check_map.ramps[i].max = ramps[i].mx;
       check_map.ramps[i].color = ramps[i].color;
-      check_map.ramps[i].dir = ramps[i].dir;
+      check_map.ramps[i].slope_n = ramps[i].slope_n;
+      check_map.ramps[i].slope_d = ramps[i].slope_d;
     }
     check_map.brush_count =
         static_cast<int>(std::min<size_t>(out_brushes.size(), MAX_MAP_BRUSHES));
@@ -1351,8 +1675,7 @@ static bool convert_source(const SourceMap& source, const std::string& name,
     }
   }
   if (!ramps.empty()) {
-    static const char* kDirNames[4] = {"+x", "-x", "+z", "-z"};
-    out += "\n# ---- ramps (walkable slopes) ----\n";
+    out += "\n# ---- ramps (walkable slopes: bounds, surface plane, colour) ----\n";
     for (const OutRamp& r : ramps) {
       out += "ramp ";
       append_float(&out, r.mn.x); out += ' ';
@@ -1361,7 +1684,10 @@ static bool convert_source(const SourceMap& source, const std::string& name,
       append_float(&out, r.mx.x - r.mn.x); out += ' ';
       append_float(&out, r.mx.y - r.mn.y); out += ' ';
       append_float(&out, r.mx.z - r.mn.z); out += ' ';
-      out += kDirNames[r.dir & 3u]; out += ' ';
+      append_plane_float(&out, r.slope_n.x); out += ' ';
+      append_plane_float(&out, r.slope_n.y); out += ' ';
+      append_plane_float(&out, r.slope_n.z); out += ' ';
+      append_plane_float(&out, r.slope_d); out += ' ';
       append_float(&out, r.color.x); out += ' ';
       append_float(&out, r.color.y); out += ' ';
       append_float(&out, r.color.z);

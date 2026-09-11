@@ -83,41 +83,31 @@ void MeshBuilder::add_box_yaw(Vec3 center, Vec3 size, Vec3 color, float yaw) {
   add_quad(p000, p100, p110, p010, N({0, 0, -1}), color);
 }
 
-void MeshBuilder::add_ramp(Vec3 mn, Vec3 mx, uint8_t dir, Vec3 color) {
-  Vec3 v0, v1, v2, v3, v4, v5;
-  switch (dir) {
-    case 0:  // +x
-      v0 = {mn.x, mn.y, mn.z}; v1 = {mx.x, mn.y, mn.z}; v2 = {mx.x, mx.y, mn.z};
-      v3 = {mn.x, mn.y, mx.z}; v4 = {mx.x, mn.y, mx.z}; v5 = {mx.x, mx.y, mx.z};
-      break;
-    case 1:  // -x
-      v0 = {mx.x, mn.y, mn.z}; v1 = {mn.x, mn.y, mn.z}; v2 = {mn.x, mx.y, mn.z};
-      v3 = {mx.x, mn.y, mx.z}; v4 = {mn.x, mn.y, mx.z}; v5 = {mn.x, mx.y, mx.z};
-      break;
-    case 2:  // +z
-      v0 = {mn.x, mn.y, mn.z}; v1 = {mn.x, mn.y, mx.z}; v2 = {mn.x, mx.y, mx.z};
-      v3 = {mx.x, mn.y, mn.z}; v4 = {mx.x, mn.y, mx.z}; v5 = {mx.x, mx.y, mx.z};
-      break;
-    default:  // -z
-      v0 = {mn.x, mn.y, mx.z}; v1 = {mn.x, mn.y, mn.z}; v2 = {mn.x, mx.y, mn.z};
-      v3 = {mx.x, mn.y, mx.z}; v4 = {mx.x, mn.y, mn.z}; v5 = {mx.x, mx.y, mn.z};
-      break;
+// A ramp is just the bounds solid with one extra cutting plane, so it meshes
+// through exactly the same path as a convex brush. Building it from the stored
+// plane is what makes a slope that does not span its bounds corner-to-corner
+// render where it actually is.
+void MeshBuilder::add_ramp(const MapRamp& ramp) {
+  MapBrush b{};
+  const Vec3 n[6] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+  const float d[6] = {ramp.max.x, -ramp.min.x, ramp.max.y, -ramp.min.y,
+                      ramp.max.z, -ramp.min.z};
+  for (int i = 0; i < 6; ++i) {
+    b.n[i] = n[i];
+    b.d[i] = d[i];
   }
-  Vec3 center = (v0 + v1 + v2 + v3 + v4 + v5) / 6.0f;
-  auto face = [&](Vec3 a, Vec3 b, Vec3 d, Vec3 e, bool tri) {
-    Vec3 n = vec3_cross(b - a, d - a);
-    if (vec3_length(n) < 1e-6f) return;
-    n = vec3_normalize(n);
-    Vec3 fc = tri ? (a + b + d) / 3.0f : (a + b + d + e) * 0.25f;
-    if (vec3_dot(n, fc - center) < 0.0f) n = -n;
-    if (tri) add_tri(a, b, d, n, color);
-    else add_quad(a, b, d, e, n, color);
-  };
-  face(v0, v1, v4, v3, false);  // bottom
-  face(v0, v3, v5, v2, false);  // sloped top
-  face(v1, v2, v5, v4, false);  // tall vertical face
-  face(v0, v2, v1, v0, true);   // side
-  face(v3, v4, v5, v3, true);   // side
+  b.plane_count = 6;
+  // Orient the cut so the solid is the part below the surface.
+  Vec3 sn = ramp.slope_n;
+  float sd = ramp.slope_d;
+  if (sn.y < 0.0f) { sn = -sn; sd = -sd; }
+  b.n[b.plane_count] = sn;
+  b.d[b.plane_count] = sd;
+  ++b.plane_count;
+  b.min = ramp.min;
+  b.max = ramp.max;
+  b.color = ramp.color;
+  add_brush(b);
 }
 
 void MeshBuilder::add_box(Vec3 mn, Vec3 mx, Vec3 color) {

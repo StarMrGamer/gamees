@@ -30,8 +30,8 @@ struct MeshBuilder {
   // `yaw`. Used by the dynamic box batch so entities and particles can share
   // one pre-transformed vertex buffer.
   void add_box_yaw(Vec3 center, Vec3 size, Vec3 color, float yaw);
-  // A wedge with a sloped top rising from min.y to max.y along `dir`.
-  void add_ramp(Vec3 mn, Vec3 mx, uint8_t dir, Vec3 color);
+  // A walkable slope: the bounds solid, cut by the surface plane.
+  void add_ramp(const MapRamp& ramp);
   // A convex brush. Each plane's face polygon is recovered by clipping a quad
   // on that plane against every other plane, then fanned into triangles.
   void add_brush(const MapBrush& brush);

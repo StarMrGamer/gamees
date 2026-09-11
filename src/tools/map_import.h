@@ -51,6 +51,14 @@ struct MapImportResult {
   int brushes_approximated = 0;
   // Angled brushes kept as convex plane sets rather than bounding boxes.
   int brushes_kept = 0;
+  // Displacement terrain: source heightfield cells, and the merged ramps they
+  // became. Terrain lives in its own BSP lump and is invisible to the brush
+  // reader, so a map that leans on it comes in full of holes without this.
+  int patches_seen = 0;
+  int patches_kept = 0;
+  int patches_dropped = 0;
+  int patches_outside = 0;  // 3D skybox scenery, not playable ground
+  int skybox_dropped = 0;   // ramps/brushes outside the playable bounds
   // Mean fraction of each approximated brush's bounding box that was actually
   // solid. 1.0 means no error; 0.5 means half the emitted block is invented.
   float approx_fill = 0.0f;

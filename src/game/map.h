@@ -5,7 +5,10 @@
 #include <cstdint>
 
 constexpr int MAX_MAP_BOXES = 4096;
-constexpr int MAX_MAP_RAMPS = 1024;
+// Terrain arrives as ramps too (displacement cells, merged), so this budget
+// covers both hand-placed slopes and imported ground - de_dust2 alone needs
+// ~1000 for terrain after merging.
+constexpr int MAX_MAP_RAMPS = 4096;
 constexpr int MAX_MAP_BRUSHES = 1024;
 // Planes per convex brush. A census of de_dust2 found 88% of its angled solids
 // use four or fewer angled faces; sixteen leaves room for those plus the six
@@ -20,7 +23,7 @@ constexpr int MAX_SPAWNS = 16;
 constexpr int MAP_GRID_DIM = 64;
 constexpr int MAP_GRID_CELLS = MAP_GRID_DIM * MAP_GRID_DIM;
 constexpr int MAP_GRID_MAX_BOX_ENTRIES = 49152;
-constexpr int MAP_GRID_MAX_RAMP_ENTRIES = 16384;
+constexpr int MAP_GRID_MAX_RAMP_ENTRIES = 65536;
 constexpr int MAP_GRID_MAX_BRUSH_ENTRIES = 32768;
 
 struct MapBox {
@@ -28,14 +31,27 @@ struct MapBox {
   Vec3 color;
 };
 
-// A right-triangular prism (wedge) whose top surface slopes from `min.y` at
-// the low edge up to `max.y` at the high edge. `dir` is the ascending
-// direction: 0=+x, 1=-x, 2=+z, 3=-z. The solid sits below the slope.
+// A walkable slope: the solid below `slope_n . p = slope_d`, bounded by
+// [min, max].
+//
+// The plane is stored rather than inferred from the bounds. Deriving it - "the
+// surface runs from min.y at one edge to max.y at the other" - is only true for
+// a wedge that fills its bounding box corner to corner, and most imported
+// slopes do not: on de_dust2, 189 of 326 had a slope that started somewhere
+// other than the bottom of their bounds, one of them 5.7 m out. Storing the
+// plane also allows slopes that ascend diagonally rather than along an axis.
 struct MapRamp {
   Vec3 min, max;
   Vec3 color;
-  uint8_t dir;
+  Vec3 slope_n;
+  float slope_d;
 };
+
+// Surface height of a ramp at (x, z), ignoring bounds. Callers clamp.
+inline float map_ramp_plane_y(const MapRamp& r, float x, float z) {
+  if (r.slope_n.y > -1e-6f && r.slope_n.y < 1e-6f) return r.min.y;
+  return (r.slope_d - r.slope_n.x * x - r.slope_n.z * z) / r.slope_n.y;
+}
 
 // CSR-style bucket lists: cell c owns entries [start[c], start[c + 1]). A
 // primitive is listed in every cell its XZ extent touches, so a query only has

@@ -313,8 +313,14 @@ TEST(arena_spawns_face_movable_space) {
 
 TEST(player_walks_up_a_ramp) {
   Map map{};
-  // Slope rising from y=0 at x=-10 to y=5 at x=10.
-  map.ramps[map.ramp_count++] = {{-10.0f, 0.0f, -5.0f}, {10.0f, 5.0f, 5.0f}, {0.5f, 0.5f, 0.5f}, 0};
+  // Slope rising from y=0 at x=-10 to y=5 at x=10, i.e. the plane through
+  // (-10, 0) and (10, 5): 5x - 20y = -50, normalised.
+  {
+    Vec3 n = vec3_normalize({-5.0f, 20.0f, 0.0f});
+    map.ramps[map.ramp_count++] = {{-10.0f, 0.0f, -5.0f}, {10.0f, 5.0f, 5.0f},
+                                   {0.5f, 0.5f, 0.5f}, n,
+                                   vec3_dot(n, Vec3{-10.0f, 0.0f, 0.0f})};
+  }
   map.spawns[0] = {-9.0f, 0.0f, 0.0f};
   map.spawn_count = 1;
 

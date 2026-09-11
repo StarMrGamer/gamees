@@ -120,8 +120,9 @@ brushes. When importing a real Source map each brush lands in one of those, and
 `--import-map` reports the split:
 
 ```
-fidelity: 1021 axis-aligned, 326 ramps, 736 angled
-  angled: 709 kept exactly as convex brushes, 27 carved into boxes
+fidelity: 974 axis-aligned, 324 ramps, 710 angled
+  angled: 683 kept exactly as convex brushes, 27 carved into boxes
+terrain: 3984 displacement cells -> 3132 merged ramps (512 skipped as 3D skybox)
 ```
 
 A **convex brush** is stored the way the source format stores it - as a set of
@@ -165,11 +166,42 @@ bounding box. They are redundant for point-in-solid, but they are what keeps
 the swept-AABB test tight - without them, expanding the angled planes by the
 player's extent rounds the brush's edges outward and you collide with thin air.
 
+### What a Source BSP actually contains
+
+Three separate things bit here, and all of them presented as "the map feels
+wrong" rather than as an error:
+
+**Terrain is not brushes.** Ground in a Source map is a *displacement*: a base
+quad face plus a grid of per-vertex offsets, living in `LUMP_DISPINFO` and
+`LUMP_DISP_VERTS`. A brush reader sees none of it. de_dust2 keeps almost all of
+its open ground there - 69 patches, 3984 cells - so the level imported with its
+outdoor areas simply missing, which is what players fell through. Importing
+them tripled the reachable area, 43957 -> 127413 standing positions.
+
+Only a ramp is walkable, so terrain cells become ramps (bounds plus best-fit
+plane), with neighbouring cells merged where they share a plane. Merge
+*neighbours in the displacement's own grid*, never "cells whose bounding boxes
+overlap" - the latter fuses patches from opposite ends of the level into one
+enormous slab.
+
+**Not every brush is a wall.** Filter on `CONTENTS_SOLID`. A brush with
+`contents != 0` can be a player-clip (an invisible wall the mapper used to shape
+movement), glass, a grate, an area portal or an origin marker. de_dust2 has 67
+player-clips and 8 glass volumes; imported as solid they become blocks standing
+in the level that no player ever saw.
+
+**The 3D skybox is in the same lumps.** Source builds distant scenery as a
+separate miniature region hundreds of metres from the map. Its brushes,
+displacements and ramps all arrive with everything else. Bound the import to
+the playable area - and derive those bounds from the geometry list that has
+already been pruned of it. `filter_disconnected()` only prunes *boxes*, so
+computing bounds from ramps or brushes lets a single stray skybox slope stretch
+them across the level and every skybox patch back in.
+
 ### What NOT to do about walk leaks
 
-`de_dust2` still reports 259 walk leaks. They are real - the import has no
-outer terrain or skybox, so at the edges of the level there is genuinely
-nothing underneath.
+`de_dust2` still reports some walk leaks, at the outer edges where the level's
+seal is genuinely missing.
 
 The obvious fix is to drop a barrier box at every leak column. **Do not.** It
 was tried: 27 barriers, leaks went to zero, and the reachable-position count
@@ -179,10 +211,9 @@ be able to walk into. The metric was too coarse to catch it and the change was
 reverted.
 
 Falling out is already handled: `player_move()` returns anyone below
-`map.void_y` to a spawn. A leak costs you a teleport, not a crash. Fixing them
-properly means restoring the missing outer geometry, not fencing the player in
-- and a barrier that blocks real play space is a worse bug than the leak it
-fixes.
+`map.void_y` to a spawn. A leak costs you a teleport, not a crash. Fixing leaks
+properly means restoring missing geometry - as importing displacements did,
+taking them from 259 to 174 while *adding* play area rather than removing it.
 
 ## `arena_tests` - filtering
 

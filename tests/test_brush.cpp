@@ -256,3 +256,56 @@ TEST(brush_mesh_closes_a_wedge) {
                  + 4.0f * (10.0f * std::sqrt(2.0f));  // the diagonal face
   CHECK_NEAR(mesh_surface_area(mb), expected, 0.2f);
 }
+
+// Regression: MapRamp used to infer its surface from its bounds - "min.y at one
+// edge, max.y at the other". That is only true for a wedge filling its bounds
+// corner to corner. On de_dust2, 189 of 326 imported slopes were not, one of
+// them by 5.7 m, which put ramps nowhere near the geometry they came from.
+// The plane is stored now, so a slope covering only part of its bounds is
+// placed correctly.
+TEST(ramp_surface_follows_its_stored_plane) {
+  auto map = std::make_unique<Map>();
+  // Bounds 20 wide and 6 tall, but the surface only climbs from y=2 to y=4:
+  // the plane through (x=-10, y=2) and (x=10, y=4).
+  std::string text =
+      "name partial\n"
+      "spawn 0 20 0 0\n"
+      "box -40 -1 -40 80 1 80 0.5 0.5 0.5\n"
+      "ramp -10 0 -5 20 6 10 -2 20 0 60 0.5 0.5 0.5\n";
+  CHECK(map_parse(text.c_str(), map.get()));
+  CHECK_EQ_INT(map->ramp_count, 1);
+
+  float y = 0.0f;
+  CHECK(map_ramp_surface(*map, -10.0f, 0.0f, &y));
+  CHECK_NEAR(y, 2.0f, 0.02f);
+  CHECK(map_ramp_surface(*map, 0.0f, 0.0f, &y));
+  CHECK_NEAR(y, 3.0f, 0.02f);
+  CHECK(map_ramp_surface(*map, 10.0f, 0.0f, &y));
+  CHECK_NEAR(y, 4.0f, 0.02f);
+
+  // The old bounds-derived rule would have said 0.0 at the low edge and 6.0 at
+  // the high edge; neither is within tolerance of the real surface.
+  CHECK(map_ramp_surface(*map, -10.0f, 0.0f, &y));
+  CHECK(y > 1.0f);
+}
+
+// The legacy "+x / -x / +z / -z" spelling must still load, reconstructed as the
+// corner-to-corner plane it used to mean.
+TEST(ramp_legacy_direction_spelling_still_loads) {
+  auto map = std::make_unique<Map>();
+  std::string text =
+      "name legacy\n"
+      "spawn 0 20 0 0\n"
+      "box -40 -1 -40 80 1 80 0.5 0.5 0.5\n"
+      "ramp 0 0 -4 10 4 8 +x 0.3 0.6 0.3\n";
+  CHECK(map_parse(text.c_str(), map.get()));
+  CHECK_EQ_INT(map->ramp_count, 1);
+
+  float y = 0.0f;
+  CHECK(map_ramp_surface(*map, 0.0f, 0.0f, &y));
+  CHECK_NEAR(y, 0.0f, 0.05f);
+  CHECK(map_ramp_surface(*map, 5.0f, 0.0f, &y));
+  CHECK_NEAR(y, 2.0f, 0.05f);
+  CHECK(map_ramp_surface(*map, 10.0f, 0.0f, &y));
+  CHECK_NEAR(y, 4.0f, 0.05f);
+}

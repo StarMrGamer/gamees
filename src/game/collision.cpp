@@ -110,17 +110,9 @@ bool map_box_overlap(const Map& map, const Aabb& box) {
 static inline void ramp_surface_candidate(const MapRamp& r, float x, float z, bool* found,
                                           float* best) {
   if (x < r.min.x || x > r.max.x || z < r.min.z || z > r.max.z) return;
-  float span_x = r.max.x - r.min.x;
-  float span_z = r.max.z - r.min.z;
-  float t = 0.0f;
-  switch (r.dir) {
-    case 0: t = span_x > 0.0f ? (x - r.min.x) / span_x : 0.0f; break;
-    case 1: t = span_x > 0.0f ? (r.max.x - x) / span_x : 0.0f; break;
-    case 2: t = span_z > 0.0f ? (z - r.min.z) / span_z : 0.0f; break;
-    default: t = span_z > 0.0f ? (r.max.z - z) / span_z : 0.0f; break;
-  }
-  t = clampf(t, 0.0f, 1.0f);
-  float y = r.min.y + (r.max.y - r.min.y) * t;
+  // Evaluate the stored plane, then clamp into the ramp's own bounds so the
+  // surface never runs off the end of the solid.
+  float y = clampf(map_ramp_plane_y(r, x, z), r.min.y, r.max.y);
   if (!*found || y > *best) {
     *best = y;
     *found = true;

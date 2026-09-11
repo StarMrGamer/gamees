@@ -14,16 +14,7 @@ namespace {
 
 // Ramps are solid below their sloped top surface; returns the surface height.
 float ramp_surface_at(const MapRamp& r, float x, float z) {
-  float span_x = r.max.x - r.min.x;
-  float span_z = r.max.z - r.min.z;
-  float t = 0.0f;
-  switch (r.dir) {
-    case 0: t = span_x > 0.0f ? (x - r.min.x) / span_x : 0.0f; break;
-    case 1: t = span_x > 0.0f ? (r.max.x - x) / span_x : 0.0f; break;
-    case 2: t = span_z > 0.0f ? (z - r.min.z) / span_z : 0.0f; break;
-    default: t = span_z > 0.0f ? (r.max.z - z) / span_z : 0.0f; break;
-  }
-  return r.min.y + (r.max.y - r.min.y) * std::max(0.0f, std::min(1.0f, t));
+  return std::max(r.min.y, std::min(r.max.y, map_ramp_plane_y(r, x, z)));
 }
 
 }  // namespace

@@ -316,31 +316,64 @@ bool map_parse(const char* text, Map* out) {
         log_error("map line %d: ramp requires x y z w h d", line_no);
         return false;
       }
-      std::string dir;
-      if (!(ss >> dir)) {
-        log_error("map line %d: ramp requires an ascending direction (+x/-x/+z/-z)",
-                  line_no);
-        return false;
-      }
-      float rgb[3]{};
-      if (!parse_floats(ss, rgb, 3)) {
-        log_error("map line %d: ramp requires r g b", line_no);
-        return false;
-      }
-      uint8_t dir_id = 255;
-      if (dir == "+x") dir_id = 0;
-      else if (dir == "-x") dir_id = 1;
-      else if (dir == "+z") dir_id = 2;
-      else if (dir == "-z") dir_id = 3;
-      if (dir_id == 255) {
-        log_error("map line %d: invalid ramp direction '%s'", line_no, dir.c_str());
+      std::string token;
+      if (!(ss >> token)) {
+        log_error("map line %d: ramp requires a slope", line_no);
         return false;
       }
       MapRamp& r = out->ramps[out->ramp_count++];
       r.min = {v[0], v[1], v[2]};
       r.max = {v[0] + v[3], v[1] + v[4], v[2] + v[5]};
+
+      // Two spellings. The modern one gives the surface plane outright; the
+      // legacy one names a cardinal ascent direction, which is reconstructed
+      // as the corner-to-corner plane it used to imply.
+      int legacy_dir = -1;
+      if (token == "+x") legacy_dir = 0;
+      else if (token == "-x") legacy_dir = 1;
+      else if (token == "+z") legacy_dir = 2;
+      else if (token == "-z") legacy_dir = 3;
+
+      if (legacy_dir >= 0) {
+        float run = (legacy_dir < 2) ? (r.max.x - r.min.x) : (r.max.z - r.min.z);
+        float rise = r.max.y - r.min.y;
+        if (run < 1e-6f) run = 1e-6f;
+        // Surface through (low edge, min.y) and (high edge, max.y).
+        Vec3 asc{legacy_dir == 0 ? 1.0f : (legacy_dir == 1 ? -1.0f : 0.0f), 0.0f,
+                 legacy_dir == 2 ? 1.0f : (legacy_dir == 3 ? -1.0f : 0.0f)};
+        Vec3 n = vec3_normalize({-asc.x * rise, run, -asc.z * rise});
+        float lx = legacy_dir == 0 ? r.min.x : (legacy_dir == 1 ? r.max.x : r.min.x);
+        float lz = legacy_dir == 2 ? r.min.z : (legacy_dir == 3 ? r.max.z : r.min.z);
+        r.slope_n = n;
+        r.slope_d = vec3_dot(n, Vec3{lx, r.min.y, lz});
+      } else {
+        float pn[3]{};
+        pn[0] = std::strtof(token.c_str(), nullptr);
+        if (!parse_floats(ss, pn + 1, 2)) {
+          log_error("map line %d: ramp plane requires nx ny nz d", line_no);
+          return false;
+        }
+        float pd = 0.0f;
+        if (!parse_floats(ss, &pd, 1)) {
+          log_error("map line %d: ramp plane requires nx ny nz d", line_no);
+          return false;
+        }
+        Vec3 n{pn[0], pn[1], pn[2]};
+        float len = vec3_length(n);
+        if (len < 1e-6f) {
+          log_error("map line %d: degenerate ramp plane normal", line_no);
+          return false;
+        }
+        r.slope_n = n / len;
+        r.slope_d = pd / len;
+      }
+
+      float rgb[3]{};
+      if (!parse_floats(ss, rgb, 3)) {
+        log_error("map line %d: ramp requires r g b", line_no);
+        return false;
+      }
       r.color = {rgb[0], rgb[1], rgb[2]};
-      r.dir = dir_id;
     } else if (directive == "brush") {
       if (out->brush_count >= MAX_MAP_BRUSHES) {
         log_error("map line %d: too many brushes", line_no);

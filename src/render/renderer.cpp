@@ -109,7 +109,7 @@ bool renderer_init(Renderer& r, const Map& map) {
     world.add_box(map.boxes[i].min, map.boxes[i].max, map.boxes[i].color);
   }
   for (int i = 0; i < map.ramp_count; ++i) {
-    world.add_ramp(map.ramps[i].min, map.ramps[i].max, map.ramps[i].dir, map.ramps[i].color);
+    world.add_ramp(map.ramps[i]);
   }
   for (int i = 0; i < map.brush_count; ++i) {
     world.add_brush(map.brushes[i]);
