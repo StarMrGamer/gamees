@@ -403,9 +403,11 @@ int main(int argc, char** argv) {
              result.truncated ? " [truncated]" : "");
     log_info("  %d spawns, %d health", result.spawns, result.health);
     if (result.patches_seen > 0) {
-      log_info("  terrain: %d displacement cells -> %d merged ramps (%d skipped as 3D skybox)%s",
-               result.patches_seen, result.patches_kept, result.patches_outside,
-               result.patches_dropped > 0 ? " [ramp budget exhausted]" : "");
+      log_info("  terrain: %d displacement cells -> %d patches (%d flat boxes, %d ramps),"
+               " %d skipped as 3D skybox%s",
+               result.patches_seen, result.patches_kept, result.patches_as_boxes,
+               result.patches_kept - result.patches_as_boxes, result.patches_outside,
+               result.patches_dropped > 0 ? " [budget exhausted]" : "");
     }
     log_info("  fidelity: %d axis-aligned, %d ramps, %d angled",
              result.brushes_exact, result.brushes_ramped, result.brushes_approximated);

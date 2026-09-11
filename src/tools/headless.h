@@ -81,6 +81,10 @@ std::string netcheck_report_json(const NetCheckReport& r);
 struct ProbeReport {
   Vec3 pos{};
   bool inside_solid = false;   // the player hull overlaps geometry here
+  // How far straight up the hull must move to come free. Standing exactly on a
+  // surface overlaps it by a fraction of a millimetre, which is resting contact
+  // rather than being trapped; only a real burial needs a meaningful lift.
+  float penetration = 0.0f;
   bool standable = false;      // hull is clear and something supports it
   bool grounded = false;
   bool has_floor = false;

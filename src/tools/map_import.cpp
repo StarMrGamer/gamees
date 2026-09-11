@@ -1200,11 +1200,22 @@ static float ramp_surface_of(const OutRamp& r, float x, float z) {
 // the horizon into the level hundreds of metres from anything playable.
 static void patches_to_ramps(const std::vector<SourcePatch>& patches, float scale,
                              float thickness, Vec3 world_mn, Vec3 world_mx,
-                             const std::vector<OutBox>& boxes,
+                             std::vector<OutBox>& boxes,
                              const std::vector<OutBrush>& brushes,
                              std::vector<OutRamp>& ramps, MapImportResult* result) {
   const float kMargin = 8.0f;
+  // A merged rectangle whose surface rises less than this across its whole span
+  // is flat enough to be a box, which is cheaper to collide against than a ramp
+  // and leaves the ramp budget for geometry that genuinely slopes.
+  //
+  // The box top sits at the patch's lowest corner (never its mean - a box that
+  // pokes above the terrain it replaces swallows the player standing on it), so
+  // the threshold is also the worst-case lip left against neighbouring patches.
+  // Keep it small: at 5 cm that lip is an eighth of a step and costs ~0.6% of
+  // the reachable area, where 20 cm converts more patches but costs 3.4%.
+  const float kFlatRise = 0.05f;
   int terrain_start = -1;
+  int terrain_box_start = -1;
   struct Cell {
     Vec3 mn, mx;
     Vec3 n;
@@ -1309,6 +1320,34 @@ static void patches_to_ramps(const std::vector<SourcePatch>& patches, float scal
           if (result) ++result->patches_dropped;
           continue;
         }
+        // How much the surface climbs over this rectangle. Most ground is
+        // flat, and a box there is cheaper to collide against and leaves the
+        // ramp budget for geometry that genuinely slopes.
+        float ny = seed.n.y > 1e-4f ? seed.n.y : 1e-4f;
+        float rise = (std::fabs(seed.n.x) * (mx.x - mn.x) +
+                      std::fabs(seed.n.z) * (mx.z - mn.z)) / ny;
+        if (rise <= kFlatRise) {
+          // The top goes at the *lowest* corner of the real surface, never the
+          // mean. A box that pokes above the terrain it replaces swallows the
+          // player standing on that terrain; one that sits slightly under it
+          // just leaves a lip, and the lip is smaller than a step.
+          float top = 1e30f;
+          for (int c = 0; c < 4; ++c) {
+            float px = (c & 1) ? mx.x : mn.x;
+            float pz = (c & 2) ? mx.z : mn.z;
+            float y = (seed.d - seed.n.x * px - seed.n.z * pz) / ny;
+            if (y < top) top = y;
+          }
+          if (top <= mn.y + 0.01f) top = mn.y + 0.01f;
+          if (terrain_box_start < 0) terrain_box_start = static_cast<int>(boxes.size());
+          boxes.push_back({mn, {mx.x, top, mx.z}, seed.color,
+                           (mx.x - mn.x) * (top - mn.y) * (mx.z - mn.z), boxes.size()});
+          if (result) {
+            ++result->patches_kept;
+            ++result->patches_as_boxes;
+          }
+          continue;
+        }
         terrain_start = terrain_start < 0 ? static_cast<int>(ramps.size()) : terrain_start;
         ramps.push_back({mn, mx, seed.color, seed.n, seed.d});
         if (result) ++result->patches_kept;
@@ -1325,7 +1364,8 @@ static void patches_to_ramps(const std::vector<SourcePatch>& patches, float scal
   // So each cell is deepened individually, down to just short of whatever is
   // under it, leaving enough headroom that any space a player could occupy
   // stays open.
-  if (terrain_start >= 0 && terrain_start < static_cast<int>(ramps.size())) {
+  if ((terrain_start >= 0 && terrain_start < static_cast<int>(ramps.size())) ||
+      (terrain_box_start >= 0 && terrain_box_start < static_cast<int>(boxes.size()))) {
     auto world = std::make_unique<Map>();
     world->box_count = static_cast<int>(std::min<size_t>(boxes.size(), MAX_MAP_BOXES));
     for (int i = 0; i < world->box_count; ++i) {
@@ -1349,16 +1389,33 @@ static void patches_to_ramps(const std::vector<SourcePatch>& patches, float scal
 
     const float headroom = PLAYER_HEIGHT + 0.3f;
     const float max_extra = 12.0f;
-    std::vector<float> extra(ramps.size(), 0.0f);
-    for (size_t i = static_cast<size_t>(terrain_start); i < ramps.size(); ++i) {
-      const OutRamp& r = ramps[i];
-      Vec3 from{(r.mn.x + r.mx.x) * 0.5f, r.mn.y - 0.02f, (r.mn.z + r.mx.z) * 0.5f};
+    auto clearance_below = [&](Vec3 mn, Vec3 mx) {
+      Vec3 from{(mn.x + mx.x) * 0.5f, mn.y - 0.02f, (mn.z + mx.z) * 0.5f};
       float hit = ray_map(*world, from, {0.0f, -1.0f, 0.0f}, max_extra + headroom + 1.0f);
       float gap = hit >= max_extra + headroom ? max_extra : std::max(0.0f, hit - headroom);
-      extra[i] = std::min(gap, max_extra);
+      return std::min(gap, max_extra);
+    };
+    std::vector<float> ramp_extra(ramps.size(), 0.0f);
+    if (terrain_start >= 0) {
+      for (size_t i = static_cast<size_t>(terrain_start); i < ramps.size(); ++i) {
+        ramp_extra[i] = clearance_below(ramps[i].mn, ramps[i].mx);
+      }
     }
-    for (size_t i = static_cast<size_t>(terrain_start); i < ramps.size(); ++i) {
-      ramps[i].mn.y -= extra[i];
+    std::vector<float> box_extra(boxes.size(), 0.0f);
+    if (terrain_box_start >= 0) {
+      for (size_t i = static_cast<size_t>(terrain_box_start); i < boxes.size(); ++i) {
+        box_extra[i] = clearance_below(boxes[i].mn, boxes[i].mx);
+      }
+    }
+    if (terrain_start >= 0) {
+      for (size_t i = static_cast<size_t>(terrain_start); i < ramps.size(); ++i) {
+        ramps[i].mn.y -= ramp_extra[i];
+      }
+    }
+    if (terrain_box_start >= 0) {
+      for (size_t i = static_cast<size_t>(terrain_box_start); i < boxes.size(); ++i) {
+        boxes[i].mn.y -= box_extra[i];
+      }
     }
   }
 }

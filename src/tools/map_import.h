@@ -56,6 +56,7 @@ struct MapImportResult {
   // reader, so a map that leans on it comes in full of holes without this.
   int patches_seen = 0;
   int patches_kept = 0;
+  int patches_as_boxes = 0;  // flat enough that a box beats a ramp
   int patches_dropped = 0;
   int patches_outside = 0;  // 3D skybox scenery, not playable ground
   int skybox_dropped = 0;   // ramps/brushes outside the playable bounds

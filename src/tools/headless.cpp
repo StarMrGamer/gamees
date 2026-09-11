@@ -403,6 +403,16 @@ bool probe_position(const char* map_path, Vec3 pos, ProbeReport* out, std::strin
     r.rest_y = p.y;
   }
 
+  if (r.inside_solid) {
+    for (float lift = 0.005f; lift <= 1.0f; lift += 0.005f) {
+      Vec3 up_pos{pos.x, pos.y + lift, pos.z};
+      if (!probe_inside_solid(map, up_pos)) {
+        r.penetration = lift;
+        break;
+      }
+    }
+  }
+
   // When embedded, find the closest direction back out - that is what you need
   // to know to judge whether it is a thin seam or a solid block.
   if (r.inside_solid) {
@@ -453,7 +463,10 @@ std::string probe_report_text(const ProbeReport& r) {
   else std::snprintf(floor_s, sizeof(floor_s), "NOTHING BELOW");
   if (r.ceiling_distance >= 0.0f) std::snprintf(ceil_s, sizeof(ceil_s), "%.2f m above", r.ceiling_distance);
   else std::snprintf(ceil_s, sizeof(ceil_s), "open sky");
-  if (r.inside_solid && r.escape_distance >= 0.0f) {
+  if (r.inside_solid && r.penetration > 0.0f && r.penetration <= 0.05f) {
+    std::snprintf(escape_s, sizeof(escape_s), "clears with a %.0f mm lift",
+                  r.penetration * 1000.0f);
+  } else if (r.inside_solid && r.escape_distance >= 0.0f) {
     std::snprintf(escape_s, sizeof(escape_s), "nearest free spot %.1f m along (%.0f %.0f %.0f)",
                   r.escape_distance, r.escape_dir.x, r.escape_dir.y, r.escape_dir.z);
   } else if (r.inside_solid) {
@@ -471,7 +484,10 @@ std::string probe_report_text(const ProbeReport& r) {
                 "  nearest spawn %.1f m\n"
                 "  geometry <3m  %d boxes, %d ramps, %d brushes\n",
                 r.pos.x, r.pos.y, r.pos.z,
-                r.inside_solid ? "YES - player is stuck here" : "no",
+                !r.inside_solid ? "no"
+                    : (r.penetration > 0.0f && r.penetration <= 0.05f)
+                          ? "touching - resting on a surface, not trapped"
+                          : "YES - player is stuck here",
                 escape_s[0] ? "\n    " : "", escape_s,
                 r.standable ? "yes" : "no", r.grounded ? "yes" : "no",
                 floor_s, ceil_s,

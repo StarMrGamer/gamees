@@ -210,6 +210,11 @@ player hull is inside solid (and the nearest way out), whether the spot is
 standable, floor and ceiling distances, whether dropping from there leaves the
 world, and how much geometry is nearby.
 
+It separates *resting contact* from *trapped*: standing exactly on a surface
+overlaps it by a fraction of a millimetre, and a probe that calls that "stuck"
+sends you chasing a bug that is not there. Anything clearing with a few
+millimetres of lift is reported as touching, not trapped.
+
 Keep its solidity test a call into the same code `move_slide()` uses. When it
 had its own lookalike copy of the rule it reported a position as stuck that the
 simulation was perfectly happy with, which sent a real diagnosis down a false
@@ -228,6 +233,18 @@ returns a hillside overhead rather than the ground underfoot. Grounding and the
 step-up snap use `map_ramp_surface_near()`, which only considers surfaces within
 stepping reach of the caller; blocking uses `map_ramp_blocks()`, which requires
 the ramp's solid body to actually overlap the player hull.
+
+Flat terrain becomes boxes, not ramps. Roughly a quarter of de_dust2's
+displacement patches are level to within 5 cm, and a box is cheaper to collide
+against and leaves the ramp budget for geometry that genuinely slopes.
+
+Two rules make that safe. The box top goes at the patch's **lowest** corner,
+never its mean or highest: a box that pokes above the terrain it replaces
+swallows the player standing on that terrain, which showed up immediately as
+positions reported from play turning "inside solid". And the flatness threshold
+is also the worst-case lip left against neighbouring patches, so it stays small
+- measured on de_dust2, 5 cm converts 714 patches and costs 0.6% of the
+reachable area, where 20 cm converts 1552 but costs 3.4%.
 
 Terrain cells are given an adaptive skirt for the same reason. A thin one leaves
 a void under every slope that players drop through; a thick fixed one buries the
