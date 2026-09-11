@@ -336,3 +336,147 @@ std::string netcheck_report_json(const NetCheckReport& r) {
                 static_cast<double>(r.max_prediction_error), r.failure.c_str());
   return buf;
 }
+
+// ---------------------------------------------------------------------------
+// Point probe
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Must mirror move_slide's own rule exactly, or the probe reports a position as
+// stuck that the simulation is perfectly happy with.
+bool probe_inside_solid(const Map& map, Vec3 pos) {
+  if (map_box_overlap(map, player_aabb(pos, false))) return true;
+  return map_ramp_blocks(map, pos, false);
+}
+
+}  // namespace
+
+bool probe_position(const char* map_path, Vec3 pos, ProbeReport* out, std::string* error) {
+  if (!out) return false;
+  Map map{};
+  if (!map_load(map_path, &map)) {
+    if (error) *error = std::string("failed to load map '") + (map_path ? map_path : "") + "'";
+    return false;
+  }
+
+  ProbeReport r;
+  r.pos = pos;
+  r.void_y = map.void_y;
+  r.inside_solid = probe_inside_solid(map, pos);
+
+  Vec3 probe = pos;
+  probe.y -= 0.05f;
+  r.grounded = map_box_overlap(map, player_aabb(probe, false));
+  if (!r.grounded) {
+    float surf = 0.0f;
+    if (map_ramp_surface(map, pos.x, pos.z, &surf) && pos.y <= surf + 0.08f &&
+        pos.y >= surf - STEP_HEIGHT) {
+      r.grounded = true;
+    }
+  }
+  r.standable = !r.inside_solid && r.grounded;
+
+  // Rays are cast from eye height so a surface the feet are resting on does not
+  // register as zero distance.
+  Vec3 eye = pos;
+  eye.y += EYE_HEIGHT;
+  float down = ray_map(map, eye, {0.0f, -1.0f, 0.0f}, 500.0f);
+  r.has_floor = down < 500.0f;
+  r.floor_distance = r.has_floor ? std::max(0.0f, down - EYE_HEIGHT) : -1.0f;
+  float up = ray_map(map, eye, {0.0f, 1.0f, 0.0f}, 500.0f);
+  r.ceiling_distance = up < 500.0f ? up : -1.0f;
+
+  // Drop test with the real physics: does this spot lead out of the world?
+  {
+    Vec3 p = pos;
+    Vec3 v{0.0f, 0.0f, 0.0f};
+    r.falls_out = true;
+    for (int i = 0; i < 6 * TICK_RATE; ++i) {
+      v.y -= GRAVITY * TICK_DT;
+      MoveResult mr = move_slide(map, p, v, false, TICK_DT);
+      p = mr.pos;
+      v = mr.vel;
+      if (p.y < map.void_y) { r.falls_out = true; break; }
+      if (mr.on_ground) { r.falls_out = false; break; }
+    }
+    r.rest_y = p.y;
+  }
+
+  // When embedded, find the closest direction back out - that is what you need
+  // to know to judge whether it is a thin seam or a solid block.
+  if (r.inside_solid) {
+    const Vec3 dirs[6] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+    for (float dist = 0.1f; dist <= 6.0f && r.escape_distance < 0.0f; dist += 0.1f) {
+      for (const Vec3& d : dirs) {
+        Vec3 candidate{pos.x + d.x * dist, pos.y + d.y * dist, pos.z + d.z * dist};
+        if (!probe_inside_solid(map, candidate)) {
+          r.escape_distance = dist;
+          r.escape_dir = d;
+          break;
+        }
+      }
+    }
+  }
+
+  for (int i = 0; i < map.spawn_count; ++i) {
+    Vec3 d = map.spawns[i] - pos;
+    float dist = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+    if (r.nearest_spawn < 0.0f || dist < r.nearest_spawn) r.nearest_spawn = dist;
+  }
+
+  const float radius = 3.0f;
+  auto near_box = [&](Vec3 mn, Vec3 mx) {
+    return pos.x > mn.x - radius && pos.x < mx.x + radius && pos.y > mn.y - radius &&
+           pos.y < mx.y + radius && pos.z > mn.z - radius && pos.z < mx.z + radius;
+  };
+  for (int i = 0; i < map.box_count; ++i) {
+    if (near_box(map.boxes[i].min, map.boxes[i].max)) ++r.boxes_near;
+  }
+  for (int i = 0; i < map.ramp_count; ++i) {
+    if (near_box(map.ramps[i].min, map.ramps[i].max)) ++r.ramps_near;
+  }
+  for (int i = 0; i < map.brush_count; ++i) {
+    if (near_box(map.brushes[i].min, map.brushes[i].max)) ++r.brushes_near;
+  }
+
+  *out = r;
+  return true;
+}
+
+std::string probe_report_text(const ProbeReport& r) {
+  char buf[1400];
+  char floor_s[48];
+  char ceil_s[48];
+  char escape_s[80];
+  if (r.has_floor) std::snprintf(floor_s, sizeof(floor_s), "%.2f m below", r.floor_distance);
+  else std::snprintf(floor_s, sizeof(floor_s), "NOTHING BELOW");
+  if (r.ceiling_distance >= 0.0f) std::snprintf(ceil_s, sizeof(ceil_s), "%.2f m above", r.ceiling_distance);
+  else std::snprintf(ceil_s, sizeof(ceil_s), "open sky");
+  if (r.inside_solid && r.escape_distance >= 0.0f) {
+    std::snprintf(escape_s, sizeof(escape_s), "nearest free spot %.1f m along (%.0f %.0f %.0f)",
+                  r.escape_distance, r.escape_dir.x, r.escape_dir.y, r.escape_dir.z);
+  } else if (r.inside_solid) {
+    std::snprintf(escape_s, sizeof(escape_s), "no free spot within 6 m - deeply buried");
+  } else {
+    escape_s[0] = 0;
+  }
+  std::snprintf(buf, sizeof(buf),
+                "position      %.2f %.2f %.2f\n"
+                "  inside solid  %s%s%s\n"
+                "  standable     %s (grounded %s)\n"
+                "  floor         %s\n"
+                "  ceiling       %s\n"
+                "  drop test     %s (rest y %.2f, void at %.2f)\n"
+                "  nearest spawn %.1f m\n"
+                "  geometry <3m  %d boxes, %d ramps, %d brushes\n",
+                r.pos.x, r.pos.y, r.pos.z,
+                r.inside_solid ? "YES - player is stuck here" : "no",
+                escape_s[0] ? "\n    " : "", escape_s,
+                r.standable ? "yes" : "no", r.grounded ? "yes" : "no",
+                floor_s, ceil_s,
+                r.falls_out ? "FALLS OUT OF THE WORLD" : "lands safely",
+                r.rest_y, r.void_y, r.nearest_spawn,
+                r.boxes_near, r.ramps_near, r.brushes_near);
+  return buf;
+}

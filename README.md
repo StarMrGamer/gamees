@@ -46,7 +46,9 @@ class switch (Ranger/Scout/Tank), and Escape for the settings menu.
 Two map-inspection aids: **N** toggles noclip (fly through geometry, no gravity,
 WASD plus Space/Ctrl for up and down, hold Shift to move faster), and **P**
 copies your current position to the clipboard as `x y z` — holding it also shows
-the figures on screen. Noclip refuses to switch off while you are inside a wall,
+the figures on screen. Paste that straight into
+`arena --probe "x y z" --map maps/<map>.txt` to see what the engine thinks is at
+that spot. Noclip refuses to switch off while you are inside a wall,
 since that would wedge you there permanently. Jump can be
 changed to mouse wheel up/down in settings or with `--jump mwheelup` /
 `--jump mwheeldown`; in mouse-wheel mode, Space no longer jumps.

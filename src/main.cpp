@@ -34,6 +34,7 @@ enum RunMode {
   MODE_SIMULATE,
   MODE_BENCH,
   MODE_NETCHECK,
+  MODE_PROBE,
   MODE_HELP,
 };
 
@@ -56,6 +57,8 @@ static void print_usage() {
       "  arena --bench                  microbenchmark the simulation hot paths\n"
       "  arena --netcheck               run server + clients over loopback, check the round trip\n"
       "  arena --check-map FILE         verify a map is sealed against the void\n"
+      "  arena --probe \"X Y Z\"         report what the engine sees at a position\n"
+      "                                 (the client's P key copies this format)\n"
       "  arena --import-map FILE        convert a .map (Valve 220) into arena format\n"
       "\n"
       "Options:\n"
@@ -161,6 +164,7 @@ int main(int argc, char** argv) {
   bool json_output = false;
   SimOptions sim_options;
   NetCheckOptions netcheck_options;
+  Vec3 probe_pos{};
   uint16_t port = DEFAULT_PORT;
   int fraglimit = DEFAULT_FRAG_LIMIT;
   ClientSettings client_settings{};
@@ -183,6 +187,13 @@ int main(int argc, char** argv) {
       mode = MODE_SIMULATE;
     } else if (std::strcmp(argv[i], "--bench") == 0) {
       mode = MODE_BENCH;
+    } else if (std::strcmp(argv[i], "--probe") == 0 && i + 1 < argc) {
+      mode = MODE_PROBE;
+      const char* text = argv[++i];
+      if (std::sscanf(text, "%f %f %f", &probe_pos.x, &probe_pos.y, &probe_pos.z) != 3 &&
+          std::sscanf(text, "%f,%f,%f", &probe_pos.x, &probe_pos.y, &probe_pos.z) != 3) {
+        fatal_error("invalid --probe, expected \"x y z\"");
+      }
     } else if (std::strcmp(argv[i], "--netcheck") == 0) {
       mode = MODE_NETCHECK;
     } else if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
@@ -305,6 +316,17 @@ int main(int argc, char** argv) {
                 static_cast<double>(report.first_stuck_pos.z));
       return 1;
     }
+    return 0;
+  }
+
+  if (mode == MODE_PROBE) {
+    ProbeReport report;
+    std::string error;
+    if (!probe_position(map_path, probe_pos, &report, &error)) {
+      log_error("probe failed: %s", error.c_str());
+      return 1;
+    }
+    std::printf("map %s\n%s", map_path, probe_report_text(report).c_str());
     return 0;
   }
 

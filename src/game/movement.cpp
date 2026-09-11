@@ -9,9 +9,7 @@
 // brushes, plus a ramp whose surface is more than a step above the feet.
 static bool inside_solid(const Map& map, Vec3 pos, bool crouching) {
   if (map_box_overlap(map, player_aabb(pos, crouching))) return true;
-  float surf = 0.0f;
-  if (map_ramp_surface(map, pos.x, pos.z, &surf) && surf > pos.y + STEP_HEIGHT) return true;
-  return false;
+  return map_ramp_blocks(map, pos, crouching);
 }
 
 static Vec3 horizontal(Vec3 v) {

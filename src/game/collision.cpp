@@ -119,26 +119,70 @@ static inline void ramp_surface_candidate(const MapRamp& r, float x, float z, bo
   }
 }
 
-bool map_ramp_surface(const Map& map, float x, float z, float* y_out) {
-  bool found = false;
-  float best = -1e30f;
+// Runs `visit` over every ramp whose footprint covers (x, z).
+template <typename Visit>
+static inline void for_each_ramp_at(const Map& map, float x, float z, Visit visit) {
   const MapGrid& g = map.grid;
   if (g.built) {
     int cx = 0;
     int cz = 0;
-    if (!grid_covers(g, x, z, &cx, &cz)) return false;
+    if (!grid_covers(g, x, z, &cx, &cz)) return;
     int cell = cz * MAP_GRID_DIM + cx;
     for (int32_t e = g.ramp_start[cell]; e < g.ramp_start[cell + 1]; ++e) {
-      ramp_surface_candidate(map.ramps[g.ramp_entries[e]], x, z, &found, &best);
+      visit(map.ramps[g.ramp_entries[e]]);
     }
-    if (found && y_out) *y_out = best;
-    return found;
+    return;
   }
-  for (int i = 0; i < map.ramp_count; ++i) {
-    ramp_surface_candidate(map.ramps[i], x, z, &found, &best);
-  }
+  for (int i = 0; i < map.ramp_count; ++i) visit(map.ramps[i]);
+}
+
+bool map_ramp_surface(const Map& map, float x, float z, float* y_out) {
+  bool found = false;
+  float best = -1e30f;
+  for_each_ramp_at(map, x, z, [&](const MapRamp& r) {
+    ramp_surface_candidate(r, x, z, &found, &best);
+  });
   if (found && y_out) *y_out = best;
   return found;
+}
+
+bool map_ramp_surface_near(const Map& map, float x, float z, float y_ref, float* y_out) {
+  bool found = false;
+  float best = -1e30f;
+  const float reach = y_ref + STEP_HEIGHT;
+  for_each_ramp_at(map, x, z, [&](const MapRamp& r) {
+    bool hit = false;
+    float y = 0.0f;
+    ramp_surface_candidate(r, x, z, &hit, &y);
+    // Terrain stacks: a hillside overhead must not mask the ground underfoot,
+    // so only surfaces within stepping reach of the caller count.
+    if (!hit || y > reach) return;
+    if (!found || y > best) {
+      best = y;
+      found = true;
+    }
+  });
+  if (found && y_out) *y_out = best;
+  return found;
+}
+
+bool map_ramp_blocks(const Map& map, Vec3 pos, bool crouching) {
+  const float height = crouching ? PLAYER_CROUCH_HEIGHT : PLAYER_HEIGHT;
+  bool blocked = false;
+  for_each_ramp_at(map, pos.x, pos.z, [&](const MapRamp& r) {
+    if (blocked) return;
+    bool hit = false;
+    float surf = 0.0f;
+    ramp_surface_candidate(r, pos.x, pos.z, &hit, &surf);
+    if (!hit) return;
+    // A ramp's solid body runs from its own floor up to its surface. Testing
+    // only "is the surface above me" makes every ramp a column of rock down to
+    // the void, which buries whatever the terrain happens to arch over.
+    if (pos.y >= surf) return;
+    if (pos.y + height <= r.min.y) return;
+    if (surf > pos.y + STEP_HEIGHT) blocked = true;
+  });
+  return blocked;
 }
 
 bool ray_aabb(Vec3 origin, Vec3 dir, const Aabb& box, float max_t, float* t_out) {
@@ -339,11 +383,7 @@ float ray_map(const Map& map, Vec3 origin, Vec3 dir, float max_t) {
 // surface is more than a step above the feet (you can't walk into its face).
 static bool blocked_at(const Map& map, Vec3 pos, bool crouching) {
   if (map_box_overlap(map, player_aabb(pos, crouching))) return true;
-  float surf = 0.0f;
-  if (map_ramp_surface(map, pos.x, pos.z, &surf) && surf > pos.y + STEP_HEIGHT) {
-    return true;
-  }
-  return false;
+  return map_ramp_blocks(map, pos, crouching);
 }
 
 static bool grounded_at(const Map& map, Vec3 pos, bool crouching) {
@@ -351,7 +391,7 @@ static bool grounded_at(const Map& map, Vec3 pos, bool crouching) {
   probe.y -= 0.05f;
   if (map_box_overlap(map, player_aabb(probe, crouching))) return true;
   float surf = 0.0f;
-  if (map_ramp_surface(map, pos.x, pos.z, &surf) &&
+  if (map_ramp_surface_near(map, pos.x, pos.z, pos.y, &surf) &&
       pos.y <= surf + 0.08f && pos.y >= surf - STEP_HEIGHT) {
     return true;
   }
@@ -432,7 +472,7 @@ MoveResult move_slide(const Map& map, Vec3 pos, Vec3 vel, bool crouching, float 
   // snapped up (walking up), and a small drop is snapped down (walking down),
   // so movement over the slope is smooth instead of stair-stepped.
   float ramp_y = 0.0f;
-  if (map_ramp_surface(map, r.pos.x, r.pos.z, &ramp_y)) {
+  if (map_ramp_surface_near(map, r.pos.x, r.pos.z, r.pos.y, &ramp_y)) {
     float rise = ramp_y - r.pos.y;
     bool snap_up = rise >= 0.0f && rise <= STEP_HEIGHT;
     bool snap_down = rise < 0.0f && rise >= -STEP_HEIGHT && r.vel.y <= 0.0f;

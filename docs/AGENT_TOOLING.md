@@ -198,6 +198,49 @@ already been pruned of it. `filter_disconnected()` only prunes *boxes*, so
 computing bounds from ramps or brushes lets a single stray skybox slope stretch
 them across the level and every skybox patch back in.
 
+### `--probe "X Y Z"` - what does the engine see here?
+
+```sh
+./build/arena --probe "35.85 -4.86 -3.56" --map maps/de_dust2.txt
+```
+
+Takes exactly the format the client's **P** key copies to the clipboard, so a
+position reported from play can be pasted straight in. It reports whether the
+player hull is inside solid (and the nearest way out), whether the spot is
+standable, floor and ceiling distances, whether dropping from there leaves the
+world, and how much geometry is nearby.
+
+Keep its solidity test a call into the same code `move_slide()` uses. When it
+had its own lookalike copy of the rule it reported a position as stuck that the
+simulation was perfectly happy with, which sent a real diagnosis down a false
+trail.
+
+### Ramps have a top *and* a bottom
+
+A ramp's solid body runs from its own floor up to its surface. Testing only
+"is the surface above me" turns every ramp into a column of rock reaching down
+to the void, which buries whatever the terrain arches over - on de_dust2 that
+included ground-level areas with spawns in them, reported from play as being
+stuck in mid-air.
+
+Terrain also *stacks*, so the plain "highest surface in this column" query
+returns a hillside overhead rather than the ground underfoot. Grounding and the
+step-up snap use `map_ramp_surface_near()`, which only considers surfaces within
+stepping reach of the caller; blocking uses `map_ramp_blocks()`, which requires
+the ramp's solid body to actually overlap the player hull.
+
+Terrain cells are given an adaptive skirt for the same reason. A thin one leaves
+a void under every slope that players drop through; a thick fixed one buries the
+ground below. Each cell is instead deepened individually, down to just short of
+whatever is beneath it, leaving a player's height of headroom. Measured on
+de_dust2:
+
+| terrain skirt | reachable | leaks |
+|---------------|-----------|-------|
+| 0.6 m fixed | 82926 | 285 |
+| 4.0 m fixed | 110928 | 212 |
+| adaptive | 128074 | 191 |
+
 ### What NOT to do about walk leaks
 
 `de_dust2` still reports some walk leaks, at the outer edges where the level's

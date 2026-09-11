@@ -74,3 +74,26 @@ bool headless_netcheck(const char* map_path, const NetCheckOptions& opts, NetChe
                        std::string* error);
 
 std::string netcheck_report_json(const NetCheckReport& r);
+
+// Answers "what does the engine think is at this spot?" for a single position -
+// the counterpart to the client's P key, which copies a position to the
+// clipboard in exactly the format --probe accepts.
+struct ProbeReport {
+  Vec3 pos{};
+  bool inside_solid = false;   // the player hull overlaps geometry here
+  bool standable = false;      // hull is clear and something supports it
+  bool grounded = false;
+  bool has_floor = false;
+  float floor_distance = -1.0f;   // metres down to the first surface
+  float ceiling_distance = -1.0f;
+  bool falls_out = false;      // dropping from here leaves the world
+  float rest_y = 0.0f;         // where a drop from here comes to rest
+  float escape_distance = -1.0f;  // nearest free spot, when embedded
+  Vec3 escape_dir{};
+  float nearest_spawn = -1.0f;
+  int boxes_near = 0, ramps_near = 0, brushes_near = 0;
+  float void_y = 0.0f;
+};
+
+bool probe_position(const char* map_path, Vec3 pos, ProbeReport* out, std::string* error);
+std::string probe_report_text(const ProbeReport& r);

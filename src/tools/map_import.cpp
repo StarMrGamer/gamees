@@ -1,5 +1,7 @@
 #include "tools/map_import.h"
 
+#include "game/collision.h"
+
 #include "core/math.h"
 #include "game/map.h"
 #include "game/map_check.h"
@@ -13,6 +15,7 @@
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1197,8 +1200,11 @@ static float ramp_surface_of(const OutRamp& r, float x, float z) {
 // the horizon into the level hundreds of metres from anything playable.
 static void patches_to_ramps(const std::vector<SourcePatch>& patches, float scale,
                              float thickness, Vec3 world_mn, Vec3 world_mx,
+                             const std::vector<OutBox>& boxes,
+                             const std::vector<OutBrush>& brushes,
                              std::vector<OutRamp>& ramps, MapImportResult* result) {
   const float kMargin = 8.0f;
+  int terrain_start = -1;
   struct Cell {
     Vec3 mn, mx;
     Vec3 n;
@@ -1303,11 +1309,57 @@ static void patches_to_ramps(const std::vector<SourcePatch>& patches, float scal
           if (result) ++result->patches_dropped;
           continue;
         }
+        terrain_start = terrain_start < 0 ? static_cast<int>(ramps.size()) : terrain_start;
         ramps.push_back({mn, mx, seed.color, seed.n, seed.d});
         if (result) ++result->patches_kept;
       }
     }
     at = end_idx;
+  }
+
+  // A terrain cell is only as thick as `thickness`, which leaves a void under
+  // every slope: walk off the edge of one and you drop through the gap. Filling
+  // it with a fixed skirt is no good either - terrain stacks, and a generous
+  // skirt on a hillside buries the ground (and the spawns) beneath it.
+  //
+  // So each cell is deepened individually, down to just short of whatever is
+  // under it, leaving enough headroom that any space a player could occupy
+  // stays open.
+  if (terrain_start >= 0 && terrain_start < static_cast<int>(ramps.size())) {
+    auto world = std::make_unique<Map>();
+    world->box_count = static_cast<int>(std::min<size_t>(boxes.size(), MAX_MAP_BOXES));
+    for (int i = 0; i < world->box_count; ++i) {
+      world->boxes[i].min = boxes[i].mn;
+      world->boxes[i].max = boxes[i].mx;
+    }
+    world->brush_count = static_cast<int>(std::min<size_t>(brushes.size(), MAX_MAP_BRUSHES));
+    for (int i = 0; i < world->brush_count; ++i) {
+      MapBrush& b = world->brushes[i];
+      b.plane_count = static_cast<uint8_t>(brushes[i].planes.size());
+      for (int k = 0; k < b.plane_count; ++k) {
+        b.n[k] = brushes[i].planes[k].n;
+        b.d[k] = brushes[i].planes[k].d;
+      }
+      map_brush_finalize(&b);
+    }
+    world->ramp_count = static_cast<int>(std::min<size_t>(ramps.size(), MAX_MAP_RAMPS));
+    for (int i = 0; i < world->ramp_count; ++i) world->ramps[i] = {
+        ramps[i].mn, ramps[i].mx, ramps[i].color, ramps[i].slope_n, ramps[i].slope_d};
+    map_build_grid(world.get());
+
+    const float headroom = PLAYER_HEIGHT + 0.3f;
+    const float max_extra = 12.0f;
+    std::vector<float> extra(ramps.size(), 0.0f);
+    for (size_t i = static_cast<size_t>(terrain_start); i < ramps.size(); ++i) {
+      const OutRamp& r = ramps[i];
+      Vec3 from{(r.mn.x + r.mx.x) * 0.5f, r.mn.y - 0.02f, (r.mn.z + r.mx.z) * 0.5f};
+      float hit = ray_map(*world, from, {0.0f, -1.0f, 0.0f}, max_extra + headroom + 1.0f);
+      float gap = hit >= max_extra + headroom ? max_extra : std::max(0.0f, hit - headroom);
+      extra[i] = std::min(gap, max_extra);
+    }
+    for (size_t i = static_cast<size_t>(terrain_start); i < ramps.size(); ++i) {
+      ramps[i].mn.y -= extra[i];
+    }
   }
 }
 
@@ -1592,7 +1644,8 @@ static bool convert_source(const SourceMap& source, const std::string& name,
   // budget with them.
   if (result) result->patches_seen = static_cast<int>(source.patches.size());
   if (have_bounds) {
-    patches_to_ramps(source.patches, options.scale, 0.6f, wmn, wmx, ramps, result);
+    patches_to_ramps(source.patches, options.scale, 0.6f, wmn, wmx, boxes, out_brushes,
+                     ramps, result);
   }
 
   // Leak check: does the outside connect to any spawn? Build a temporary Map

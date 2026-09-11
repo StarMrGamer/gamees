@@ -144,3 +144,62 @@ TEST(move_slide_still_climbs_a_clear_ramp) {
   CHECK(pos.y > start_y + 0.5f);
   CHECK(!map_box_overlap(map, player_aabb(pos, false)));
 }
+
+// Regression: a ramp used to block the player whenever its *surface* was above
+// them, ignoring where the ramp's solid body actually was. Terrain stacks - a
+// hillside arching overhead would mark the whole column under it as rock, so
+// ground-level areas (including ones with spawns in them) were unenterable.
+// Reported from play at -22.76 3.28 20.94 on de_dust2.
+TEST(ramp_overhead_does_not_block_the_ground_below_it) {
+  static Map map;
+  std::string text =
+      "name stacked\n"
+      // Ground terrain at y = 0..0.5, and a ledge 6 m up over the same ground.
+      "ramp -10 0 -10 20 0.5 20 0 1 0 0.5 0.5 0.5 0.5\n"
+      "ramp -10 6 -10 20 0.5 20 0 1 0 6.5 0.4 0.4 0.4\n"
+      "spawn 0 0.5 0 0\n";
+  CHECK(map_parse(text.c_str(), &map));
+  CHECK_EQ_INT(map.ramp_count, 2);
+
+  // Standing on the lower surface, the ledge overhead must not count as solid.
+  Vec3 stand{0.0f, 0.5f, 0.0f};
+  CHECK(!map_ramp_blocks(map, stand, false));
+
+  // And the ground underfoot must still be found, not masked by the ledge.
+  float surf = 0.0f;
+  CHECK(map_ramp_surface_near(map, stand.x, stand.z, stand.y, &surf));
+  CHECK_NEAR(surf, 0.5f, 0.05f);
+
+  // The plain query returns the highest surface in the column - which is why
+  // the grounding path must not use it.
+  CHECK(map_ramp_surface(map, stand.x, stand.z, &surf));
+  CHECK_NEAR(surf, 6.5f, 0.05f);
+
+  // Walking around at ground level stays unobstructed.
+  Rng rng{0x5AB};
+  for (int i = 0; i < 500; ++i) {
+    Vec3 p{rng_float(rng, -9.0f, 9.0f), 0.5f, rng_float(rng, -9.0f, 9.0f)};
+    CHECK(!map_ramp_blocks(map, p, false));
+  }
+
+  // Directly inside the upper slab is still solid.
+  CHECK(map_ramp_blocks(map, {0.0f, 5.6f, 0.0f}, false));
+}
+
+// Walking into the face of a ramp that really is in the way must still be
+// blocked - the fix above must not have made ramps passable.
+TEST(ramp_face_still_blocks_when_it_overlaps_the_player) {
+  static Map map;
+  std::string text =
+      "name wall\n"
+      "box -20 -1 -20 40 1 40 0.5 0.5 0.5\n"
+      // A slope climbing steeply from y=0 at x=0 to y=6 at x=6.
+      "ramp 0 0 -5 6 6 10 -6 6 0 0 0.5 0.5 0.5\n"
+      "spawn -5 0 0 0\n";
+  CHECK(map_parse(text.c_str(), &map));
+
+  // At the foot of the slope the surface is at the feet: passable.
+  CHECK(!map_ramp_blocks(map, {0.2f, 0.0f, 0.0f}, false));
+  // Further up, the surface is well overhead and the body is inside the wedge.
+  CHECK(map_ramp_blocks(map, {5.0f, 0.0f, 0.0f}, false));
+}
