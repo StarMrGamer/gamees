@@ -353,3 +353,149 @@ TEST(player_falling_into_the_void_is_teleported_to_spawn) {
   CHECK_NEAR(p.vel.y, 0.0f, 0.001f);
   CHECK_NEAR(p.vel.z, 0.0f, 0.001f);
 }
+
+// Noclip lives in the shared simulation, so these pin the behaviour both the
+// server and the client's prediction have to agree on.
+static Map noclip_map() {
+  Map map{};
+  map.boxes[map.box_count++] = {{-20, -1, -20}, {20, 0, 20}, {1, 1, 1}};   // floor
+  map.boxes[map.box_count++] = {{2, 0, -10}, {3, 8, 10}, {1, 1, 1}};       // wall at x=2..3
+  map.spawns[0] = {0, 0, 0};
+  map.spawn_count = 1;
+  map.void_y = -40.0f;
+  return map;
+}
+
+// The toggle must fire once per press. Holding the key is the common case -
+// a key held for a third of a second covers 20 ticks, and a per-tick toggle
+// would leave the state a coin flip.
+TEST(noclip_toggles_once_per_press) {
+  Map map = noclip_map();
+  Player p = movement_player({0.0f, 0.0f, 0.0f}, true);
+  PlayerInput in{};
+  in.buttons = BTN_NOCLIP;
+  for (int tick = 0; tick < 20; ++tick) player_move(p, in, map, TICK_DT);
+  CHECK(p.noclip);
+
+  in.buttons = 0;
+  for (int tick = 0; tick < 20; ++tick) player_move(p, in, map, TICK_DT);
+  CHECK(p.noclip);
+
+  in.buttons = BTN_NOCLIP;
+  for (int tick = 0; tick < 20; ++tick) player_move(p, in, map, TICK_DT);
+  CHECK(!p.noclip);
+}
+
+TEST(noclip_passes_through_solid_geometry) {
+  Map map = noclip_map();
+  Player p = movement_player({0.0f, 0.5f, 0.0f}, true);
+
+  // Normally the wall at x=2 stops you.
+  PlayerInput walk{};
+  walk.buttons = BTN_FORWARD;
+  walk.yaw = PI * 0.5f;  // +x
+  for (int tick = 0; tick < 120; ++tick) player_move(p, walk, map, TICK_DT);
+  CHECK(p.pos.x < 2.0f);
+
+  // With noclip on, the same input flies straight through it.
+  PlayerInput toggle = walk;
+  toggle.buttons |= BTN_NOCLIP;
+  player_move(p, toggle, map, TICK_DT);
+  CHECK(p.noclip);
+  for (int tick = 0; tick < 120; ++tick) player_move(p, walk, map, TICK_DT);
+  CHECK(p.pos.x > 4.0f);
+}
+
+// No gravity while flying, and the void reset must not yank you back to spawn
+// when you deliberately fly under the level to look at it.
+TEST(noclip_ignores_gravity_and_the_void) {
+  Map map = noclip_map();
+  Player p = movement_player({0.0f, 2.0f, 0.0f}, true);
+  PlayerInput on{};
+  on.buttons = BTN_NOCLIP;
+  player_move(p, on, map, TICK_DT);
+  CHECK(p.noclip);
+
+  PlayerInput idle{};
+  float y_before = p.pos.y;
+  for (int tick = 0; tick < 60; ++tick) player_move(p, idle, map, TICK_DT);
+  CHECK_NEAR(p.pos.y, y_before, 0.001f);
+
+  // Descend well below the void plane and stay there.
+  PlayerInput down{};
+  down.buttons = BTN_CROUCH;
+  for (int tick = 0; tick < 300; ++tick) player_move(p, down, map, TICK_DT);
+  CHECK(p.pos.y < map.void_y);
+  CHECK_NEAR(p.pos.x, 0.0f, 0.001f);
+  CHECK_NEAR(p.pos.z, 0.0f, 0.001f);
+}
+
+// Leaving noclip drops the flight momentum, so you fall rather than keep
+// travelling at flying speed through the level you just toggled back into.
+TEST(noclip_off_clears_velocity_and_restores_collision) {
+  Map map = noclip_map();
+  Player p = movement_player({0.0f, 6.0f, 0.0f}, true);
+  PlayerInput on{};
+  on.buttons = BTN_NOCLIP;
+  player_move(p, on, map, TICK_DT);
+
+  // Climb straight up, well clear of the wall.
+  PlayerInput fly{};
+  fly.buttons = BTN_JUMP;
+  for (int tick = 0; tick < 10; ++tick) player_move(p, fly, map, TICK_DT);
+  CHECK(vec3_length(p.vel) > 1.0f);
+  CHECK(p.pos.y > 6.0f);
+
+  PlayerInput off{};
+  off.buttons = BTN_NOCLIP;
+  player_move(p, off, map, TICK_DT);
+  CHECK(!p.noclip);
+  // Flight momentum is gone; the only velocity left is the single tick of
+  // gravity that runs in the same call once normal movement resumes.
+  CHECK_NEAR(p.vel.x, 0.0f, 0.001f);
+  CHECK_NEAR(p.vel.z, 0.0f, 0.001f);
+  CHECK_NEAR(p.vel.y, -GRAVITY * TICK_DT, 0.001f);
+
+  // Gravity applies again and the floor catches them.
+  PlayerInput idle{};
+  for (int tick = 0; tick < 240; ++tick) player_move(p, idle, map, TICK_DT);
+  CHECK(p.on_ground);
+  CHECK_NEAR(p.pos.y, 0.0f, 0.05f);
+}
+
+// Regression: flying into a wall and pressing N again used to drop the player
+// inside the solid, where the ground probe reports them standing, gravity never
+// runs and every direction is blocked - stuck until they died. The toggle is
+// refused while embedded instead.
+TEST(noclip_refuses_to_exit_inside_solid_geometry) {
+  Map map = noclip_map();
+  Player p = movement_player({0.0f, 4.0f, 0.0f}, true);
+  PlayerInput on{};
+  on.buttons = BTN_NOCLIP;
+  player_move(p, on, map, TICK_DT);
+
+  // Fly into the middle of the wall that spans x = 2..3.
+  PlayerInput fly{};
+  fly.buttons = BTN_FORWARD;
+  fly.yaw = PI * 0.5f;
+  for (int tick = 0; tick < 10; ++tick) player_move(p, fly, map, TICK_DT);
+  CHECK(p.pos.x > 2.0f);
+  CHECK(p.pos.x < 3.0f);
+  CHECK(map_box_overlap(map, player_aabb(p.pos, p.crouching)));
+
+  PlayerInput off{};
+  off.buttons = BTN_NOCLIP;
+  player_move(p, off, map, TICK_DT);
+  CHECK(p.noclip);  // refused - still flying
+
+  // Fly back out into the open, and now it takes.
+  PlayerInput back{};
+  back.buttons = BTN_BACK;
+  back.yaw = PI * 0.5f;
+  for (int tick = 0; tick < 20; ++tick) player_move(p, back, map, TICK_DT);
+  CHECK(!map_box_overlap(map, player_aabb(p.pos, p.crouching)));
+  PlayerInput off2{};
+  off2.buttons = BTN_NOCLIP;
+  player_move(p, off2, map, TICK_DT);
+  CHECK(!p.noclip);
+}

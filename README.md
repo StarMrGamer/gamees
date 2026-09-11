@@ -41,7 +41,13 @@ the host's router/firewall to allow UDP on the chosen port.
 
 Controls in the SDL client are WASD movement, Space jump by default, Left Shift
 dash, Ctrl/C crouch, F fire, arrow keys look, 1 class primary, 2 rocket, 3/4/5
-class switch (Ranger/Scout/Tank), and Escape for the settings menu. Jump can be
+class switch (Ranger/Scout/Tank), and Escape for the settings menu.
+
+Two map-inspection aids: **N** toggles noclip (fly through geometry, no gravity,
+WASD plus Space/Ctrl for up and down, hold Shift to move faster), and **P**
+copies your current position to the clipboard as `x y z` — holding it also shows
+the figures on screen. Noclip refuses to switch off while you are inside a wall,
+since that would wedge you there permanently. Jump can be
 changed to mouse wheel up/down in settings or with `--jump mwheelup` /
 `--jump mwheeldown`; in mouse-wheel mode, Space no longer jumps.
 

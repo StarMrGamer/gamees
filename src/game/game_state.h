@@ -16,6 +16,9 @@ enum Buttons : uint16_t {
   BTN_FIRE = 64,
   BTN_DASH = 128,
   BTN_AIRJUMP = 256,
+  // Held key state, not an edge: the simulation edge-detects it so the toggle
+  // happens exactly once however many ticks the key is down for.
+  BTN_NOCLIP = 512,
 };
 
 enum Weapon : uint8_t {
@@ -160,6 +163,7 @@ struct Player {
   float wall_contact_time, wall_jump_cooldown, dash_air_control_time;
   float air_jump_buffer;
   bool jump_held, dash_held, air_jump_held, air_jump_used, slide_suppressed;
+  bool noclip, noclip_held;
   uint8_t move_sound;
   int frags;
   uint32_t last_input_seq;

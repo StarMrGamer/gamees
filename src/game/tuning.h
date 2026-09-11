@@ -28,6 +28,9 @@ constexpr float SLIDE_FRICTION = 0.5f;
 constexpr float SLIDE_DURATION = 1.0f;
 constexpr float LAND_SOUND_MIN_FALL_SPEED = 5.0f;
 constexpr float STEP_HEIGHT = 0.4f;
+// Noclip is a map-inspection tool, so it flies briskly - about twice ground
+// speed - and ignores gravity, geometry and the void plane entirely.
+constexpr float NOCLIP_SPEED = 16.0f;
 constexpr float WALL_CONTACT_GRACE = 0.12f;
 constexpr float WALL_JUMP_COOLDOWN = 0.25f;
 constexpr float WALL_JUMP_UP_VELOCITY = 7.6f;

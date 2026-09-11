@@ -327,7 +327,7 @@ static void handle_events(const ClientEvents& events, const GameState& view, con
 
 static void draw_status_hud(Hud& hud, int w, int h, const Client& client, const GameState& view,
                             const Map& map, const KillFeedItem feed[4], float hitmarker_timer,
-                            float damage_timer, float fps) {
+                            float damage_timer, float fps, float copy_notice) {
   Vec3 text{0.92f, 0.96f, 0.98f};
   Vec3 warn{1.0f, 0.55f, 0.35f};
   if (damage_timer > 0.0f) {
@@ -346,14 +346,28 @@ static void draw_status_hud(Hud& hud, int w, int h, const Client& client, const 
   std::snprintf(fps_text, sizeof(fps_text), "FPS %.0f", fps);
   hud_text_shadow(hud, static_cast<float>(w) - hud_text_width(fps_text, 1.0f) - 18.0f,
                   18.0f, 1.0f, {0.74f, 0.92f, 0.86f}, "%s", fps_text);
-  // Hold P to show your position - handy for reporting map problems.
+  // Hold P to read your position; tapping it copies the same figures to the
+  // clipboard, which is what you actually want when reporting a map problem.
   const bool* keys = SDL_GetKeyboardState(nullptr);
-  if (keys[SDL_SCANCODE_P] && client.player_index >= 0 && client.player_index < MAX_PLAYERS) {
+  if (client.player_index >= 0 && client.player_index < MAX_PLAYERS) {
     const Player& lp = view.players[client.player_index];
-    char pos_text[64];
-    std::snprintf(pos_text, sizeof(pos_text), "X %.1f  Y %.1f  Z %.1f", lp.pos.x, lp.pos.y, lp.pos.z);
-    hud_text_shadow(hud, static_cast<float>(w) - hud_text_width(pos_text, 1.0f) - 18.0f,
-                    42.0f, 1.0f, {0.95f, 0.92f, 0.66f}, "%s", pos_text);
+    if (keys[SDL_SCANCODE_P]) {
+      char pos_text[64];
+      std::snprintf(pos_text, sizeof(pos_text), "X %.1f  Y %.1f  Z %.1f",
+                    lp.pos.x, lp.pos.y, lp.pos.z);
+      hud_text_shadow(hud, static_cast<float>(w) - hud_text_width(pos_text, 1.0f) - 18.0f,
+                      42.0f, 1.0f, {0.95f, 0.92f, 0.66f}, "%s", pos_text);
+    }
+    if (lp.noclip) {
+      const char* tag = "NOCLIP";
+      hud_text_shadow(hud, static_cast<float>(w) - hud_text_width(tag, 1.0f) - 18.0f,
+                      66.0f, 1.0f, {0.62f, 0.86f, 1.0f}, "%s", tag);
+    }
+  }
+  if (copy_notice > 0.0f) {
+    const char* tag = "POSITION COPIED";
+    hud_text_shadow(hud, (static_cast<float>(w) - hud_text_width(tag, 1.1f)) * 0.5f,
+                    static_cast<float>(h) * 0.62f, 1.1f, {0.80f, 1.0f, 0.85f}, "%s", tag);
   }
   for (int i = 0; i < 4; ++i) {
     if (feed[i].time_left > 0.0f) {
@@ -504,6 +518,8 @@ static PlayerInput sample_input(uint8_t weapon_switch, uint8_t class_switch, con
   if (keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_C]) in.buttons |= BTN_CROUCH;
   if (keys[SDL_SCANCODE_LSHIFT]) in.buttons |= BTN_DASH;
   if (keys[SDL_SCANCODE_F] || (mouse_buttons & SDL_BUTTON_LMASK)) in.buttons |= BTN_FIRE;
+  // Raw key state; the simulation turns it into a toggle.
+  if (keys[SDL_SCANCODE_N]) in.buttons |= BTN_NOCLIP;
   if (keys[SDL_SCANCODE_LEFT]) *yaw -= 2.6f * dt;
   if (keys[SDL_SCANCODE_RIGHT]) *yaw += 2.6f * dt;
   if (keys[SDL_SCANCODE_UP]) *pitch += 1.8f * dt;
@@ -635,6 +651,8 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
   bool map_mismatch_logged = false;
   float hitmarker_timer = 0.0f;
   float damage_timer = 0.0f;
+  float copy_notice = 0.0f;
+  bool copy_position_request = false;
   float previous_local_health = -1.0f;
   bool previous_local_alive = false;
   KillFeedItem kill_feed[4]{};
@@ -729,6 +747,9 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
             }
           }
         } else {
+          // Edge, not held state: copying once per keypress rather than once
+          // per frame for as long as P is down.
+          if (ev.key.key == SDLK_P && !ev.key.repeat) copy_position_request = true;
           if (ev.key.key == SDLK_1) selected_weapon = 1;
           if (ev.key.key == SDLK_2) selected_weapon = 2;
           if (ev.key.key == SDLK_3) {
@@ -762,6 +783,24 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
 
     GameState view;
     client_view_state(client, &view);
+
+    if (copy_notice > 0.0f) copy_notice -= dt;
+    if (copy_position_request) {
+      copy_position_request = false;
+      if (client.player_index >= 0 && client.player_index < MAX_PLAYERS) {
+        const Player& lp = view.players[client.player_index];
+        char buf[64];
+        // Bare numbers, so the result pastes straight into a map file or a bug
+        // report without editing.
+        std::snprintf(buf, sizeof(buf), "%.2f %.2f %.2f", lp.pos.x, lp.pos.y, lp.pos.z);
+        if (SDL_SetClipboardText(buf)) {
+          copy_notice = 1.2f;
+          log_info("copied position %s to the clipboard", buf);
+        } else {
+          log_warn("failed to copy position: %s", SDL_GetError());
+        }
+      }
+    }
     if (client.player_index >= 0 && client.player_index < MAX_PLAYERS &&
         view.players[client.player_index].active) {
       const Player& local = view.players[client.player_index];
@@ -862,7 +901,8 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     hud_begin(hud, w, h);
     draw_enemy_health_bars(hud, renderer, view, client.player_index, w, h);
     draw_first_person_hud(hud, w, h, local_weapon);
-    draw_status_hud(hud, w, h, client, view, map, kill_feed, hitmarker_timer, damage_timer, shown_fps);
+    draw_status_hud(hud, w, h, client, view, map, kill_feed, hitmarker_timer, damage_timer,
+                    shown_fps, copy_notice);
     const bool* keys = SDL_GetKeyboardState(nullptr);
     if (settings_open) {
       draw_settings_menu(hud, w, h, settings, settings_selected);

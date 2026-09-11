@@ -5,6 +5,15 @@
 
 #include <cmath>
 
+// Same predicate move_slide uses to reject a position: solid boxes and
+// brushes, plus a ramp whose surface is more than a step above the feet.
+static bool inside_solid(const Map& map, Vec3 pos, bool crouching) {
+  if (map_box_overlap(map, player_aabb(pos, crouching))) return true;
+  float surf = 0.0f;
+  if (map_ramp_surface(map, pos.x, pos.z, &surf) && surf > pos.y + STEP_HEIGHT) return true;
+  return false;
+}
+
 static Vec3 horizontal(Vec3 v) {
   return {v.x, 0.0f, v.z};
 }
@@ -97,6 +106,51 @@ void player_move(Player& p, const PlayerInput& in, const Map& map, float dt) {
   float ground_accel = GROUND_ACCEL * class_speed;
   float air_accel = AIR_ACCEL * class_speed;
   float air_wish_cap = AIR_WISH_CAP * class_speed;
+
+  // Noclip toggle. Edge-detected, and held in the shared simulation rather
+  // than on the client: if only the client knew, prediction would fly through
+  // a wall and the server would immediately pull the player back out of it.
+  bool want_noclip = (in.buttons & BTN_NOCLIP) != 0;
+  if (want_noclip && !p.noclip_held) {
+    // Turning it off inside a wall would wedge the player for good: the ground
+    // probe hits the surrounding solid, so they count as standing, gravity
+    // never applies and no direction is clear. Stay flying instead and let
+    // them press it again somewhere they fit.
+    if (!p.noclip || !inside_solid(map, p.pos, p.crouching)) {
+      p.noclip = !p.noclip;
+      if (!p.noclip) {
+        // Drop out of the sky rather than keeping flight momentum.
+        p.vel = {0.0f, 0.0f, 0.0f};
+      }
+      p.on_ground = false;
+      p.sliding = false;
+      p.slide_time = 0.0f;
+      p.wall_contact_time = 0.0f;
+      p.wall_normal = {0.0f, 0.0f, 0.0f};
+    }
+  }
+  p.noclip_held = want_noclip;
+
+  if (p.noclip) {
+    Vec3 look = angles_forward(p.yaw, p.pitch);
+    Vec3 side = angles_right(p.yaw);
+    Vec3 fly{};
+    if (in.buttons & BTN_FORWARD) fly += look;
+    if (in.buttons & BTN_BACK) fly -= look;
+    if (in.buttons & BTN_RIGHT) fly += side;
+    if (in.buttons & BTN_LEFT) fly -= side;
+    if (in.buttons & BTN_JUMP) fly.y += 1.0f;
+    if (in.buttons & BTN_CROUCH) fly.y -= 1.0f;
+    if (vec3_length(fly) > 0.0f) fly = vec3_normalize(fly);
+    float speed = NOCLIP_SPEED * ((in.buttons & BTN_DASH) ? 2.5f : 1.0f);
+    p.vel = fly * speed;
+    p.pos += p.vel * dt;
+    p.crouching = false;
+    p.on_ground = false;
+    // Deliberately skips collision, gravity and the void reset below - flying
+    // under the level is the whole point of the tool.
+    return;
+  }
 
   bool want_crouch = (in.buttons & BTN_CROUCH) != 0;
   if (want_crouch) {
