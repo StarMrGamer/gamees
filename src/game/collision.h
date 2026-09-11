@@ -20,6 +20,11 @@ bool map_ramp_surface(const Map& map, float x, float z, float* y_out);
 bool map_ramp_surface_near(const Map& map, float x, float z, float y_ref, float* y_out);
 // True when a ramp's solid body actually overlaps the player hull at `pos`.
 bool map_ramp_blocks(const Map& map, Vec3 pos, bool crouching);
+// True when a player standing at `pos` has something underfoot. This is the
+// rule move_slide() uses; anything that reports on a position (the probe, map
+// checks) must call it rather than re-derive it, because a second version of
+// the rule diverges and then reports the engine's behaviour wrongly.
+bool map_grounded_at(const Map& map, Vec3 pos, bool crouching);
 // Axis-aligned box against a convex brush, and ray against a convex brush.
 bool brush_box_overlap(const MapBrush& b, const Aabb& box);
 bool ray_brush(const MapBrush& b, Vec3 origin, Vec3 dir, float max_t, float* t_out);

@@ -77,11 +77,27 @@ calls `game_tick` directly and would not notice a broken serializer.
 ./build/arena --bench --map maps/de_dust2.txt
 ```
 
-Reports ns/op for `map_box_overlap`, `map_ramp_surface`, `ray_map`,
-`move_slide`, and a whole 8-player `game_tick`. Always benchmark against
-`de_dust2.txt`, not `arena.txt` - the default map has 45 boxes and hides every
-scaling problem. `de_dust2` has ~2000 primitives, which is where the spatial
-grid in `src/game/map.cpp` earns its keep.
+Reports ns/op for `map_box_overlap`, `map_ramp_surface`,
+`map_ramp_surface_near`, `ray_map`, `move_slide`, and a whole 8-player
+`game_tick`. Always benchmark against `de_dust2.txt`, not `arena.txt` - the
+default map has 45 boxes and hides every scaling problem. `de_dust2` has ~6000
+primitives, which is where the spatial grid in `src/game/map.cpp` earns its
+keep.
+
+Run **both** maps before believing a win. An index gets faster by spending
+instructions to avoid memory reads, which is a trade that inverts once the
+geometry fits in cache: the Y-band filter is worth 1.34x on de_dust2's
+broadphase and was a 5% loss on arena until it was gated on map size.
+
+The two ramp rows measure different functions on purpose. `map_ramp_surface`
+returns the highest surface anywhere in the column and only the reporting tools
+want that; `map_ramp_surface_near` bounds it to stepping reach and is the one
+`move_slide` calls three times per step. If you are optimising movement, the
+second row is the one that matters.
+
+Numbers are noisy on a busy machine - take the best of several runs, and
+compare against a build of the previous commit rather than against a figure
+written down earlier, because machine state drifts more than most changes do.
 
 ## `--check-map` - map validation
 
@@ -215,10 +231,16 @@ overlaps it by a fraction of a millimetre, and a probe that calls that "stuck"
 sends you chasing a bug that is not there. Anything clearing with a few
 millimetres of lift is reported as touching, not trapped.
 
-Keep its solidity test a call into the same code `move_slide()` uses. When it
-had its own lookalike copy of the rule it reported a position as stuck that the
-simulation was perfectly happy with, which sent a real diagnosis down a false
-trail.
+Keep **every** test it reports a call into the same code `move_slide()` uses.
+This has now gone wrong twice. The solidity check once had its own lookalike
+copy of the rule and reported a position as stuck that the simulation was
+perfectly happy with. The ground check then did the same thing more quietly: it
+asked `map_ramp_surface()` where the movement code asks
+`map_ramp_surface_near()`, so on stacked terrain it measured the player against
+a hillside overhead instead of the ground underfoot - 9027 standing positions on
+de_dust2 where the probe contradicted the engine. Both now call the engine
+(`map_grounded_at()` is exported for exactly this), and
+`grounded_at_ignores_ramps_overhead` holds the line.
 
 ### Ramps have a top *and* a bottom
 

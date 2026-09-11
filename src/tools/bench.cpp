@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <memory>
 
 namespace {
 
@@ -47,7 +48,8 @@ std::vector<Vec3> sample_points(const Map& map, int count, Rng& rng) {
 
 bool bench_run(const char* map_path, std::vector<BenchResult>* out, std::string* error) {
   if (!out) return false;
-  Map map{};
+  auto map_storage = std::make_unique<Map>();
+  Map& map = *map_storage;
   if (!map_load(map_path, &map)) {
     if (error) *error = std::string("failed to load map '") + (map_path ? map_path : "") + "'";
     return false;
@@ -76,7 +78,9 @@ bool bench_run(const char* map_path, std::vector<BenchResult>* out, std::string*
     out->push_back(timed("map_box_overlap", "overlap query", N, secs));
   }
 
-  // 2. Ramp surface lookup, called several times per movement step.
+  // 2. Ramp surface lookup over the whole column. Only the reporting tools ask
+  //    for this one; it is here because it is the unbounded case, and the gap
+  //    between it and the next row is what the query below buys.
   {
     auto t0 = Clock::now();
     unsigned hits = 0;
@@ -91,7 +95,22 @@ bool bench_run(const char* map_path, std::vector<BenchResult>* out, std::string*
     out->push_back(timed("map_ramp_surface", "surface query", N, secs));
   }
 
-  // 3. Hitscan against world geometry; a shotgun blast costs seven of these.
+  // 3. The bounded form, which is the one move_slide actually calls - three
+  //    times per step, between the ground check and the ramp snap.
+  {
+    auto t0 = Clock::now();
+    unsigned hits = 0;
+    for (int i = 0; i < N; ++i) {
+      const Vec3& p = pts[static_cast<size_t>(i)];
+      float y = 0.0f;
+      if (map_ramp_surface_near(map, p.x, p.z, p.y, &y)) ++hits;
+    }
+    double secs = std::chrono::duration<double>(Clock::now() - t0).count();
+    g_bench_sink += hits;
+    out->push_back(timed("map_ramp_surface_near", "surface query", N, secs));
+  }
+
+  // 4. Hitscan against world geometry; a shotgun blast costs seven of these.
   {
     auto t0 = Clock::now();
     float acc = 0.0f;
@@ -103,7 +122,7 @@ bool bench_run(const char* map_path, std::vector<BenchResult>* out, std::string*
     out->push_back(timed("ray_map", "world ray", N, secs));
   }
 
-  // 4. move_slide over a full second of travel at combat speed.
+  // 5. move_slide over a full second of travel at combat speed.
   {
     const int steps = 20000;
     auto t0 = Clock::now();
@@ -124,7 +143,7 @@ bool bench_run(const char* map_path, std::vector<BenchResult>* out, std::string*
     out->push_back(timed("move_slide", "movement step", steps, secs));
   }
 
-  // 5. The whole authoritative tick with a full server of players. This is the
+  // 6. The whole authoritative tick with a full server of players. This is the
   //    number that decides how much headroom a dedicated server has.
   {
     GameState state{};

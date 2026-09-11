@@ -20,6 +20,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <thread>
 
 struct KillFeedItem {
@@ -608,7 +609,10 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     log_warn("failed to set swap interval: %s", SDL_GetError());
   }
 
-  Map map{};
+  // Map carries the spatial index, so it is well over a megabyte: two of
+  // them on one stack frame overflows the default stack on Windows.
+  auto map_storage = std::make_unique<Map>();
+  Map& map = *map_storage;
   if (!map_load(map_path ? map_path : "maps/arena.txt", &map)) {
     SDL_GL_DestroyContext(gl);
     SDL_DestroyWindow(window);
@@ -633,7 +637,8 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
   audio_init(mixer);
   for (int s = 1; s < SND_COUNT; ++s) audio_register(mixer, s, synth_make(s));
 
-  Client client{};
+  auto client_storage = std::make_unique<Client>();
+  Client& client = *client_storage;
   if (!client_start(client, server, player_name ? player_name : "player")) {
     log_error("failed to start client socket");
   }

@@ -103,7 +103,8 @@ uint32_t sim_state_hash(const GameState& s) {
 bool headless_simulate(const char* map_path, const SimOptions& opts, SimReport* out,
                        std::string* error) {
   if (!out) return false;
-  Map map{};
+  auto map_storage = std::make_unique<Map>();
+  Map& map = *map_storage;
   if (!map_load(map_path, &map)) {
     if (error) *error = std::string("failed to load map '") + (map_path ? map_path : "") + "'";
     return false;
@@ -354,7 +355,8 @@ bool probe_inside_solid(const Map& map, Vec3 pos) {
 
 bool probe_position(const char* map_path, Vec3 pos, ProbeReport* out, std::string* error) {
   if (!out) return false;
-  Map map{};
+  auto map_storage = std::make_unique<Map>();
+  Map& map = *map_storage;
   if (!map_load(map_path, &map)) {
     if (error) *error = std::string("failed to load map '") + (map_path ? map_path : "") + "'";
     return false;
@@ -365,16 +367,12 @@ bool probe_position(const char* map_path, Vec3 pos, ProbeReport* out, std::strin
   r.void_y = map.void_y;
   r.inside_solid = probe_inside_solid(map, pos);
 
-  Vec3 probe = pos;
-  probe.y -= 0.05f;
-  r.grounded = map_box_overlap(map, player_aabb(probe, false));
-  if (!r.grounded) {
-    float surf = 0.0f;
-    if (map_ramp_surface(map, pos.x, pos.z, &surf) && pos.y <= surf + 0.08f &&
-        pos.y >= surf - STEP_HEIGHT) {
-      r.grounded = true;
-    }
-  }
+  // Ask the engine rather than re-deriving it. This used to run its own copy
+  // of the test with map_ramp_surface(), which reports the highest ramp
+  // anywhere in the column - on stacked terrain that is a hillside overhead,
+  // not the ground underfoot - so the probe could disagree with the movement
+  // code about whether a spot is standable.
+  r.grounded = map_grounded_at(map, pos, false);
   r.standable = !r.inside_solid && r.grounded;
 
   // Rays are cast from eye height so a surface the feet are resting on does not

@@ -79,6 +79,17 @@ target_link_libraries(arena_tests PRIVATE SDL3::SDL3)
 if(WIN32)
   target_link_libraries(arena PRIVATE ws2_32)
   target_link_libraries(arena_tests PRIVATE ws2_32)
+  # A Map is over a megabyte once its spatial index is counted, and the tools
+  # and tests routinely hold one (sometimes two) in a frame. Windows reserves
+  # 1 MB by default, where Linux gives 8; reserve the same here so a build that
+  # runs on one platform runs on the other.
+  if(MSVC)
+    target_link_options(arena PRIVATE /STACK:8388608)
+    target_link_options(arena_tests PRIVATE /STACK:8388608)
+  else()
+    target_link_options(arena PRIVATE -Wl,--stack,8388608)
+    target_link_options(arena_tests PRIVATE -Wl,--stack,8388608)
+  endif()
   if(MINGW)
     target_link_options(arena PRIVATE -static-libgcc -static-libstdc++ -Wl,-Bstatic,-lwinpthread,-Bdynamic)
     target_link_options(arena_tests PRIVATE -static-libgcc -static-libstdc++ -Wl,-Bstatic,-lwinpthread,-Bdynamic)

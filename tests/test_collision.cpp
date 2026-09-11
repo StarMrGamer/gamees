@@ -4,6 +4,7 @@
 #include "game/collision.h"
 #include "game/tuning.h"
 
+#include <memory>
 #include <string>
 
 static Map collision_map() {
@@ -202,4 +203,35 @@ TEST(ramp_face_still_blocks_when_it_overlaps_the_player) {
   CHECK(!map_ramp_blocks(map, {0.2f, 0.0f, 0.0f}, false));
   // Further up, the surface is well overhead and the body is inside the wedge.
   CHECK(map_ramp_blocks(map, {5.0f, 0.0f, 0.0f}, false));
+}
+
+// Terrain stacks: an imported hillside often arches over ground the player is
+// standing on. The ground test has to look at the surface underfoot, not the
+// highest surface in the column - de_dust2 has 9027 standing positions where
+// the two answers differ, and every one of them is a spot a reporting tool
+// would describe wrongly if it rolled its own rule.
+TEST(grounded_at_ignores_ramps_overhead) {
+  auto map = std::make_unique<Map>();
+  CHECK(map_parse("name stacked\n"
+                  "ramp -5 0 -5 10 1 10 +x 0.5 0.5 0.5\n"   // ground underfoot
+                  "ramp -5 9 -5 10 1 10 +x 0.5 0.5 0.5\n"   // hillside overhead
+                  "spawn 0 2 0 0\n",
+                  map.get()));
+  CHECK_EQ_INT(map->ramp_count, 2);
+
+  // Both ramps rise 1 m over their 10 m run, so at x = 0 the lower surface is
+  // at 0.5 and the one overhead at 9.5.
+  const float foot_y = 0.5f;
+  const float over_y = 9.5f;
+  float highest = 0.0f;
+  CHECK(map_ramp_surface(*map, 0.0f, 0.0f, &highest));
+  CHECK_NEAR(highest, over_y, 0.001f);  // the unbounded query sees the hillside
+
+  // Standing on the lower ramp. The old rule compared the feet against
+  // `highest` and concluded the player was in mid-air 9 m below a surface.
+  CHECK(map_grounded_at(*map, {0.0f, foot_y, 0.0f}, false));
+  // Standing on the hillside itself is grounded too.
+  CHECK(map_grounded_at(*map, {0.0f, over_y, 0.0f}, false));
+  // Genuinely between the two is not.
+  CHECK(!map_grounded_at(*map, {0.0f, foot_y + 4.0f, 0.0f}, false));
 }

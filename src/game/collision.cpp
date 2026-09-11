@@ -79,6 +79,33 @@ bool brush_box_overlap(const MapBrush& b, const Aabb& box) {
   return true;
 }
 
+// The indexed broadphase walk. `kBands` selects whether each entry's vertical
+// tag is consulted; the choice is made once per query on a flag the grid sets
+// at build time, so the small-map path runs the same loop without the filter
+// rather than executing a test that can never reject anything.
+template <bool kBands>
+static inline bool box_overlap_cells(const Map& map, const MapGrid& g, const Aabb& box,
+                                     const CellSpan& s) {
+  const int lo = kBands ? map_grid_band(g, box.min.y) : 0;
+  const int hi = kBands ? map_grid_band(g, box.max.y) : 0;
+  for (int z = s.z0; z <= s.z1; ++z) {
+    for (int x = s.x0; x <= s.x1; ++x) {
+      int cell = z * MAP_GRID_DIM + x;
+      for (int32_t e = g.box_start[cell]; e < g.box_start[cell + 1]; ++e) {
+        MapGridEntry entry = g.box_entries[e];
+        if (kBands && map_grid_band_miss(entry, lo, hi)) continue;
+        if (aabb_overlap(box, map_box_aabb(map.boxes[map_grid_index(entry)]))) return true;
+      }
+      for (int32_t e = g.brush_start[cell]; e < g.brush_start[cell + 1]; ++e) {
+        MapGridEntry entry = g.brush_entries[e];
+        if (kBands && map_grid_band_miss(entry, lo, hi)) continue;
+        if (brush_box_overlap(map.brushes[map_grid_index(entry)], box)) return true;
+      }
+    }
+  }
+  return false;
+}
+
 bool map_box_overlap(const Map& map, const Aabb& box) {
   const MapGrid& g = map.grid;
   if (!g.built) {
@@ -91,18 +118,8 @@ bool map_box_overlap(const Map& map, const Aabb& box) {
     return false;
   }
   CellSpan s = grid_span(g, box.min.x, box.min.z, box.max.x, box.max.z);
-  for (int z = s.z0; z <= s.z1; ++z) {
-    for (int x = s.x0; x <= s.x1; ++x) {
-      int cell = z * MAP_GRID_DIM + x;
-      for (int32_t e = g.box_start[cell]; e < g.box_start[cell + 1]; ++e) {
-        if (aabb_overlap(box, map_box_aabb(map.boxes[g.box_entries[e]]))) return true;
-      }
-      for (int32_t e = g.brush_start[cell]; e < g.brush_start[cell + 1]; ++e) {
-        if (brush_box_overlap(map.brushes[g.brush_entries[e]], box)) return true;
-      }
-    }
-  }
-  return false;
+  return g.use_bands ? box_overlap_cells<true>(map, g, box, s)
+                     : box_overlap_cells<false>(map, g, box, s);
 }
 
 // Body of the ramp-surface test for one candidate; shared by the indexed and
@@ -122,6 +139,9 @@ static inline void ramp_surface_candidate(const MapRamp& r, float x, float z, bo
 // Runs `visit` over every ramp whose footprint covers (x, z).
 template <typename Visit>
 static inline void for_each_ramp_at(const Map& map, float x, float z, Visit visit) {
+  // Most hand-built maps have no ramps at all. Answering from the count beats
+  // reading two bucket bounds out of a 16 KB index to discover it is empty.
+  if (map.ramp_count <= 0) return;
   const MapGrid& g = map.grid;
   if (g.built) {
     int cx = 0;
@@ -129,11 +149,48 @@ static inline void for_each_ramp_at(const Map& map, float x, float z, Visit visi
     if (!grid_covers(g, x, z, &cx, &cz)) return;
     int cell = cz * MAP_GRID_DIM + cx;
     for (int32_t e = g.ramp_start[cell]; e < g.ramp_start[cell + 1]; ++e) {
-      visit(map.ramps[g.ramp_entries[e]]);
+      visit(map.ramps[map_grid_index(g.ramp_entries[e])]);
     }
     return;
   }
   for (int i = 0; i < map.ramp_count; ++i) visit(map.ramps[i]);
+}
+
+// Same, restricted to ramps whose vertical extent can reach [y_lo, y_hi]. The
+// bounded and unbounded forms are separate rather than one function taking
+// infinite sentinels, because the callers that want the whole column would
+// otherwise pay for a filter that can never reject anything.
+template <typename Visit>
+static inline void for_each_ramp_in_span(const Map& map, float x, float z, float y_lo, float y_hi,
+                                         Visit visit) {
+  if (map.ramp_count <= 0) return;
+  const MapGrid& g = map.grid;
+  if (g.built) {
+    int cx = 0;
+    int cz = 0;
+    if (!grid_covers(g, x, z, &cx, &cz)) return;
+    int cell = cz * MAP_GRID_DIM + cx;
+    const int32_t begin = g.ramp_start[cell];
+    const int32_t end = g.ramp_start[cell + 1];
+    if (begin == end) return;  // no ramps here, so don't price the filter
+    if (!g.use_bands) {
+      for (int32_t e = begin; e < end; ++e) visit(map.ramps[map_grid_index(g.ramp_entries[e])]);
+      return;
+    }
+    const int lo = map_grid_band(g, y_lo);
+    const int hi = map_grid_band(g, y_hi);
+    for (int32_t e = begin; e < end; ++e) {
+      MapGridEntry entry = g.ramp_entries[e];
+      if (map_grid_band_miss(entry, lo, hi)) continue;
+      visit(map.ramps[map_grid_index(entry)]);
+    }
+    return;
+  }
+  for (int i = 0; i < map.ramp_count; ++i) {
+    const MapRamp& r = map.ramps[i];
+    if (r.max.y < y_lo || r.min.y > y_hi) continue;
+    visit(r);
+  }
 }
 
 bool map_ramp_surface(const Map& map, float x, float z, float* y_out) {
@@ -150,7 +207,7 @@ bool map_ramp_surface_near(const Map& map, float x, float z, float y_ref, float*
   bool found = false;
   float best = -1e30f;
   const float reach = y_ref + STEP_HEIGHT;
-  for_each_ramp_at(map, x, z, [&](const MapRamp& r) {
+  for_each_ramp_in_span(map, x, z, -1e30f, reach, [&](const MapRamp& r) {
     bool hit = false;
     float y = 0.0f;
     ramp_surface_candidate(r, x, z, &hit, &y);
@@ -169,7 +226,8 @@ bool map_ramp_surface_near(const Map& map, float x, float z, float y_ref, float*
 bool map_ramp_blocks(const Map& map, Vec3 pos, bool crouching) {
   const float height = crouching ? PLAYER_CROUCH_HEIGHT : PLAYER_HEIGHT;
   bool blocked = false;
-  for_each_ramp_at(map, pos.x, pos.z, [&](const MapRamp& r) {
+  for_each_ramp_in_span(map, pos.x, pos.z, pos.y, pos.y + height,
+                        [&](const MapRamp& r) {
     if (blocked) return;
     bool hit = false;
     float surf = 0.0f;
@@ -185,22 +243,42 @@ bool map_ramp_blocks(const Map& map, Vec3 pos, bool crouching) {
   return blocked;
 }
 
-bool ray_aabb(Vec3 origin, Vec3 dir, const Aabb& box, float max_t, float* t_out) {
+// The three reciprocals a slab test needs, computed once for a whole ray.
+// Hoisting them out of the per-primitive loop is the whole point: the plain
+// ray_aabb divides once per axis per box, so one de_dust2 ray - which tests
+// about fifty primitives - used to pay roughly a hundred and fifty divisions
+// for direction components that never change.
+struct RayInv {
+  float inv[3];
+  bool parallel[3];
+};
+
+static inline RayInv ray_inv(Vec3 dir) {
+  RayInv r;
+  const float d[3] = {dir.x, dir.y, dir.z};
+  for (int axis = 0; axis < 3; ++axis) {
+    r.parallel[axis] = std::fabs(d[axis]) < 0.000001f;
+    r.inv[axis] = r.parallel[axis] ? 0.0f : 1.0f / d[axis];
+  }
+  return r;
+}
+
+// Same arithmetic as ray_aabb below, with the division already done.
+static inline bool ray_aabb_pre(Vec3 origin, const RayInv& ri, const Aabb& box, float max_t,
+                                float* t_out) {
   float tmin = 0.0f;
   float tmax = max_t;
   const float o[3] = {origin.x, origin.y, origin.z};
-  const float d[3] = {dir.x, dir.y, dir.z};
   const float mn[3] = {box.min.x, box.min.y, box.min.z};
   const float mx[3] = {box.max.x, box.max.y, box.max.z};
 
   for (int axis = 0; axis < 3; ++axis) {
-    if (std::fabs(d[axis]) < 0.000001f) {
+    if (ri.parallel[axis]) {
       if (o[axis] < mn[axis] || o[axis] > mx[axis]) return false;
       continue;
     }
-    float inv = 1.0f / d[axis];
-    float t1 = (mn[axis] - o[axis]) * inv;
-    float t2 = (mx[axis] - o[axis]) * inv;
+    float t1 = (mn[axis] - o[axis]) * ri.inv[axis];
+    float t2 = (mx[axis] - o[axis]) * ri.inv[axis];
     if (t1 > t2) std::swap(t1, t2);
     tmin = std::max(tmin, t1);
     tmax = std::min(tmax, t2);
@@ -211,14 +289,19 @@ bool ray_aabb(Vec3 origin, Vec3 dir, const Aabb& box, float max_t, float* t_out)
   return tmin <= max_t;
 }
 
+bool ray_aabb(Vec3 origin, Vec3 dir, const Aabb& box, float max_t, float* t_out) {
+  return ray_aabb_pre(origin, ray_inv(dir), box, max_t, t_out);
+}
+
 // Ray against a convex solid: clip the parameter interval by every half-space.
 // Exact, unlike the box approximation it replaces.
-bool ray_brush(const MapBrush& b, Vec3 origin, Vec3 dir, float max_t, float* t_out) {
+static bool ray_brush_pre(const MapBrush& b, Vec3 origin, Vec3 dir, const RayInv& ri,
+                          float max_t, float* t_out) {
   // Same idea for rays: the cached bounds reject most brushes along the walk
   // before the per-plane interval clip runs.
   {
     float t = max_t;
-    if (!ray_aabb(origin, dir, Aabb{b.min, b.max}, max_t, &t)) return false;
+    if (!ray_aabb_pre(origin, ri, Aabb{b.min, b.max}, max_t, &t)) return false;
   }
   float tmin = 0.0f;
   float tmax = max_t;
@@ -242,24 +325,28 @@ bool ray_brush(const MapBrush& b, Vec3 origin, Vec3 dir, float max_t, float* t_o
   return true;
 }
 
-static float ray_map_brute(const Map& map, Vec3 origin, Vec3 dir, float max_t) {
+bool ray_brush(const MapBrush& b, Vec3 origin, Vec3 dir, float max_t, float* t_out) {
+  return ray_brush_pre(b, origin, dir, ray_inv(dir), max_t, t_out);
+}
+
+static float ray_map_brute(const Map& map, Vec3 origin, Vec3 dir, const RayInv& ri, float max_t) {
   float best = max_t;
   for (int i = 0; i < map.box_count; ++i) {
     float t = max_t;
-    if (ray_aabb(origin, dir, map_box_aabb(map.boxes[i]), best, &t) && t < best) {
+    if (ray_aabb_pre(origin, ri, map_box_aabb(map.boxes[i]), best, &t) && t < best) {
       best = t;
     }
   }
   for (int i = 0; i < map.ramp_count; ++i) {
     float t = max_t;
     Aabb a{map.ramps[i].min, map.ramps[i].max};
-    if (ray_aabb(origin, dir, a, best, &t) && t < best) {
+    if (ray_aabb_pre(origin, ri, a, best, &t) && t < best) {
       best = t;
     }
   }
   for (int i = 0; i < map.brush_count; ++i) {
     float t = max_t;
-    if (ray_brush(map.brushes[i], origin, dir, best, &t) && t < best) {
+    if (ray_brush_pre(map.brushes[i], origin, dir, ri, best, &t) && t < best) {
       best = t;
     }
   }
@@ -269,12 +356,17 @@ static float ray_map_brute(const Map& map, Vec3 origin, Vec3 dir, float max_t) {
 // Below this many primitives a straight scan beats walking the grid: the whole
 // geometry list fits in cache and the DDA's setup cost dominates. Measured with
 // `arena --bench` - on the 45-box default map the scan is ~1.5x quicker.
-constexpr int RAY_GRID_MIN_PRIMS = 128;
+// It is the same threshold the band tags use (MAP_GRID_BAND_MIN_PRIMS) and for
+// the same reason - below it the geometry is cache-resident - so they are one
+// constant: if they ever drifted apart the DDA could run with the tags off and
+// silently do the walk unfiltered.
+constexpr int RAY_GRID_MIN_PRIMS = MAP_GRID_BAND_MIN_PRIMS;
 
 float ray_map(const Map& map, Vec3 origin, Vec3 dir, float max_t) {
   const MapGrid& g = map.grid;
+  const RayInv ri = ray_inv(dir);
   if (!g.built || map.box_count + map.ramp_count + map.brush_count <= RAY_GRID_MIN_PRIMS) {
-    return ray_map_brute(map, origin, dir, max_t);
+    return ray_map_brute(map, origin, dir, ri, max_t);
   }
 
   // Clip the ray to the grid's XZ footprint first; a shot fired from outside
@@ -341,22 +433,46 @@ float ray_map(const Map& map, Vec3 origin, Vec3 dir, float max_t) {
     // Everything left to visit starts beyond a hit we already have.
     if (t_cell > best) break;
 
+    // The ray only occupies part of this cell's height. Its band range over
+    // the segment inside the cell drops the candidates stacked above and below
+    // it before any of them is read - on a 43 m tall map like de_dust2 a
+    // near-horizontal shot passes almost the whole column in every cell.
+    int band_lo = 0;
+    int band_hi = MAP_GRID_Y_BANDS;
+    if (g.use_bands) {
+      float t_leave = t_max_x < t_max_z ? t_max_x : t_max_z;
+      if (t_leave > best) t_leave = best;
+      if (t_leave > t_exit) t_leave = t_exit;
+      float y_a = origin.y + dir.y * t_cell;
+      float y_b = origin.y + dir.y * t_leave;
+      band_lo = map_grid_band(g, y_a < y_b ? y_a : y_b);
+      band_hi = map_grid_band(g, y_a < y_b ? y_b : y_a);
+    }
+
     int cell = cz * MAP_GRID_DIM + cx;
     for (int32_t e = g.box_start[cell]; e < g.box_start[cell + 1]; ++e) {
+      MapGridEntry entry = g.box_entries[e];
+      if (map_grid_band_miss(entry, band_lo, band_hi)) continue;
       float t = max_t;
-      if (ray_aabb(origin, dir, map_box_aabb(map.boxes[g.box_entries[e]]), best, &t) && t < best) {
+      if (ray_aabb_pre(origin, ri, map_box_aabb(map.boxes[map_grid_index(entry)]), best, &t) &&
+          t < best) {
         best = t;
       }
     }
     for (int32_t e = g.ramp_start[cell]; e < g.ramp_start[cell + 1]; ++e) {
-      const MapRamp& r = map.ramps[g.ramp_entries[e]];
+      MapGridEntry entry = g.ramp_entries[e];
+      if (map_grid_band_miss(entry, band_lo, band_hi)) continue;
+      const MapRamp& r = map.ramps[map_grid_index(entry)];
       float t = max_t;
       Aabb a{r.min, r.max};
-      if (ray_aabb(origin, dir, a, best, &t) && t < best) best = t;
+      if (ray_aabb_pre(origin, ri, a, best, &t) && t < best) best = t;
     }
     for (int32_t e = g.brush_start[cell]; e < g.brush_start[cell + 1]; ++e) {
+      MapGridEntry entry = g.brush_entries[e];
+      if (map_grid_band_miss(entry, band_lo, band_hi)) continue;
       float t = max_t;
-      if (ray_brush(map.brushes[g.brush_entries[e]], origin, dir, best, &t) && t < best) {
+      if (ray_brush_pre(map.brushes[map_grid_index(entry)], origin, dir, ri, best, &t) &&
+          t < best) {
         best = t;
       }
     }
@@ -386,7 +502,7 @@ static bool blocked_at(const Map& map, Vec3 pos, bool crouching) {
   return map_ramp_blocks(map, pos, crouching);
 }
 
-static bool grounded_at(const Map& map, Vec3 pos, bool crouching) {
+bool map_grounded_at(const Map& map, Vec3 pos, bool crouching) {
   Vec3 probe = pos;
   probe.y -= 0.05f;
   if (map_box_overlap(map, player_aabb(probe, crouching))) return true;
@@ -396,6 +512,10 @@ static bool grounded_at(const Map& map, Vec3 pos, bool crouching) {
     return true;
   }
   return false;
+}
+
+static inline bool grounded_at(const Map& map, Vec3 pos, bool crouching) {
+  return map_grounded_at(map, pos, crouching);
 }
 
 static bool try_step(const Map& map, Vec3& pos, int axis, float delta, bool crouching) {

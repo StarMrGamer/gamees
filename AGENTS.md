@@ -69,6 +69,31 @@ a POD - it is `memset` on load and copied by value - so no `std::vector` or
 owning pointers in it. If the grid ever fails to build the queries silently fall
 back to a full scan, which stays correct and only costs speed.
 
+The index is 2D, so a cell in a tall map holds its whole column. Each bucket
+entry therefore packs the primitive's vertical extent, quantised to
+`MAP_GRID_Y_BANDS`, next to its index: a candidate whose bands miss the query's
+is dropped from the entry word itself, without the random read into the
+primitive array that is the expensive part. On de_dust2 that is 53% of them.
+Two rules follow. A query that genuinely wants the whole column
+(`map_ramp_surface`) must use the unfiltered walk rather than pass infinite
+bounds - it would otherwise pay for a filter that can never reject. And the
+filter is only consulted when `MapGrid::use_bands` is set, because below
+`MAP_GRID_BAND_MIN_PRIMS` the geometry is cache-resident and the read it avoids
+was free; on the 45-box default map, filtering cost about 5% and saved nothing.
+Both paths are held to the same answers by `map_grid_band_filter_matches_unfiltered`.
+
+Memory is the binding constraint on these hot paths, not arithmetic. Two
+measurements worth keeping in mind before optimising here: hoisting the three
+reciprocals out of `ray_aabb` into a per-ray struct was worth 2.3x on `ray_map`
+(one de_dust2 ray tests ~50 primitives and was paying ~150 divisions for a
+direction that never changes), while a Z-order sort of the primitive arrays -
+which looks like it should help and did help before the band tags existed -
+measured slower afterwards and was removed. Benchmark, do not reason.
+
+`Map` is over a megabyte. Heap-allocate it rather than putting one on the stack
+alongside another (`game_client.cpp` holds a `Map` and a `Client`, which carries
+its own); the Windows link reserves an 8 MB stack for the same reason.
+
 There are three solid primitives: `MapBox`, `MapRamp` (bounds plus an explicit
 surface plane - it is the only walkable slope, so imported terrain becomes
 ramps too), and `MapBrush` (a convex solid stored as half-spaces, used for

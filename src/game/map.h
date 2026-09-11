@@ -53,22 +53,78 @@ inline float map_ramp_plane_y(const MapRamp& r, float x, float z) {
   return (r.slope_d - r.slope_n.x * x - r.slope_n.z * z) / r.slope_n.y;
 }
 
+// Vertical resolution of the band tag packed into every grid entry (below).
+constexpr int MAP_GRID_Y_BANDS = 255;
+// Primitive count above which consulting those tags pays for itself.
+constexpr int MAP_GRID_BAND_MIN_PRIMS = 128;
+
 // CSR-style bucket lists: cell c owns entries [start[c], start[c + 1]). A
 // primitive is listed in every cell its XZ extent touches, so a query only has
 // to visit the cells it overlaps. `built` is false when the map does not fit
 // the entry budget, in which case every query falls back to a full scan and
 // stays correct, just slower.
+//
+// The grid indexes XZ only, so a cell in a tall map holds the whole column:
+// on de_dust2 - 43 m from the lowest tunnel to the highest roof - a player
+// query landed on eleven candidates and only about five could possibly be at
+// their height. Each entry therefore carries the primitive's vertical extent,
+// quantised to MAP_GRID_Y_BANDS bands, alongside its index. A candidate whose
+// bands miss the query's is dropped straight from the entry word, without the
+// random read into the primitive array that is the expensive part; measured on
+// de_dust2 that is 53% of them.
+struct MapGridEntry {
+  uint32_t packed;  // index in bits 0-15, low band in 16-23, high band in 24-31
+};
+
+// The index occupies the low 16 bits of the entry, so every primitive budget
+// has to fit there. Raising one past 65535 would silently alias entries onto
+// the wrong primitive instead of failing to build.
+static_assert(MAX_MAP_BOXES <= 65536 && MAX_MAP_RAMPS <= 65536 && MAX_MAP_BRUSHES <= 65536,
+              "grid entry indices are 16 bits");
+static_assert(MAP_GRID_Y_BANDS <= 255, "grid entry band tags are 8 bits");
+
+inline MapGridEntry map_grid_pack(int index, int band_lo, int band_hi) {
+  return {static_cast<uint32_t>(index) | (static_cast<uint32_t>(band_lo) << 16) |
+          (static_cast<uint32_t>(band_hi) << 24)};
+}
+inline int map_grid_index(MapGridEntry e) { return static_cast<int>(e.packed & 0xffffu); }
+// True when the entry's vertical extent cannot reach the query band range.
+// Bands round down, so a band only separates two spans that really are apart.
+inline bool map_grid_band_miss(MapGridEntry e, int lo, int hi) {
+  int band_lo = static_cast<int>((e.packed >> 16) & 0xffu);
+  int band_hi = static_cast<int>((e.packed >> 24) & 0xffu);
+  return band_hi < lo || band_lo > hi;
+}
+
 struct MapGrid {
   bool built;
+  // Whether the band tags are worth consulting. The filter earns its keep by
+  // skipping a random read into the primitive arrays; on a map small enough
+  // for those arrays to sit in cache there is no read worth skipping and the
+  // test is pure overhead, so small maps run the unfiltered loop instead.
+  bool use_bands;
   float org_x, org_z;          // world position of cell (0, 0)
   float inv_cell_x, inv_cell_z;
+  float y_org, inv_y_band;     // world height of band 0, and bands per metre
   int32_t box_start[MAP_GRID_CELLS + 1];
   int32_t ramp_start[MAP_GRID_CELLS + 1];
   int32_t brush_start[MAP_GRID_CELLS + 1];
-  uint16_t box_entries[MAP_GRID_MAX_BOX_ENTRIES];
-  uint16_t ramp_entries[MAP_GRID_MAX_RAMP_ENTRIES];
-  uint16_t brush_entries[MAP_GRID_MAX_BRUSH_ENTRIES];
+  MapGridEntry box_entries[MAP_GRID_MAX_BOX_ENTRIES];
+  MapGridEntry ramp_entries[MAP_GRID_MAX_RAMP_ENTRIES];
+  MapGridEntry brush_entries[MAP_GRID_MAX_BRUSH_ENTRIES];
 };
+
+// Band holding world height `y`, clamped to the tagged range. Every query pays
+// for this twice, so it clamps branchlessly (a max, a min and a truncation).
+// Clamping in float also keeps the sentinels callers pass for "no bound" well
+// defined: casting -1e30 to int is not.
+inline int map_grid_band(const MapGrid& g, float y) {
+  float f = (y - g.y_org) * g.inv_y_band;
+  f = f > 0.0f ? f : 0.0f;  // ordered compare, so NaN lands on band 0
+  const float top = static_cast<float>(MAP_GRID_Y_BANDS);
+  f = f < top ? f : top;
+  return static_cast<int>(f);
+}
 
 // An arbitrary convex solid, stored as the intersection of half-spaces
 // (`dot(n, p) <= d`). This is how brushes are expressed in the source formats

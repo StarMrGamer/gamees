@@ -20,8 +20,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <vector>
+#include <memory>
 #include <string>
+#include <vector>
 
 enum RunMode {
   MODE_MENU,
@@ -367,7 +368,7 @@ int main(int argc, char** argv) {
     } else {
       log_info("benchmark on '%s'", map_path);
       for (const BenchResult& r : results) {
-        log_info("  %-18s %9.1f ns/%s  (%.0f/s)", r.name.c_str(), r.ns_per_op,
+        log_info("  %-22s %9.1f ns/%s  (%.0f/s)", r.name.c_str(), r.ns_per_op,
                  r.unit.c_str(), r.ops_per_second);
       }
     }
@@ -430,7 +431,8 @@ int main(int argc, char** argv) {
   }
 
   if (mode == MODE_CHECK) {
-    Map map{};
+    auto map_storage = std::make_unique<Map>();
+    Map& map = *map_storage;
     if (!map_load(map_path, &map)) {
       log_error("failed to load map '%s'", map_path);
       return 1;
