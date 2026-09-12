@@ -1,5 +1,7 @@
 #include "client/game_client.h"
 
+#include "client/gunfeel.h"
+
 #include "audio/mixer.h"
 #include "audio/synth.h"
 #include "client/client.h"
@@ -299,9 +301,54 @@ static void spawn_weapon_fx(ParticleSystem& particles, Rng& rng, const GameState
   }
 }
 
+// Frame timing, kept as a ring of recent samples rather than an average: a
+// mean frame time of 4 ms with a 40 ms hitch every second feels terrible and
+// reads as 250 fps. The percentiles are what the player is actually feeling.
+struct FrameStats {
+  static constexpr int CAPACITY = 240;
+  float frame_ms[CAPACITY];
+  float cpu_ms[CAPACITY];
+  int count;
+  int next;
+  // Stage totals for the most recent frame.
+  float last_sim_ms, last_render_ms, last_swap_ms, last_wait_ms;
+};
+
+static void frame_stats_push(FrameStats& f, float frame_ms, float cpu_ms) {
+  f.frame_ms[f.next] = frame_ms;
+  f.cpu_ms[f.next] = cpu_ms;
+  f.next = (f.next + 1) % FrameStats::CAPACITY;
+  if (f.count < FrameStats::CAPACITY) ++f.count;
+}
+
+static float frame_stats_percentile(const FrameStats& f, const float* data, float q) {
+  if (f.count <= 0) return 0.0f;
+  float sorted[FrameStats::CAPACITY];
+  for (int i = 0; i < f.count; ++i) sorted[i] = data[i];
+  // Insertion sort: 240 samples once per HUD update is nothing, and it keeps
+  // this free of allocations in the frame loop.
+  for (int i = 1; i < f.count; ++i) {
+    float v = sorted[i];
+    int j = i - 1;
+    while (j >= 0 && sorted[j] > v) {
+      sorted[j + 1] = sorted[j];
+      --j;
+    }
+    sorted[j + 1] = v;
+  }
+  int idx = static_cast<int>(q * static_cast<float>(f.count - 1) + 0.5f);
+  if (idx < 0) idx = 0;
+  if (idx >= f.count) idx = f.count - 1;
+  return sorted[idx];
+}
+
 static void handle_events(const ClientEvents& events, const GameState& view, const Map& map,
                           int local_index, Mixer& mixer, ParticleSystem& particles, Rng& fx_rng,
                           KillFeedItem feed[4], float* hitmarker_timer) {
+  // Our own gunshot has already been played locally, the moment the button
+  // went down. Playing the server's echo as well would double every muzzle
+  // flash and every report a fraction of a second late, which sounds worse
+  // than the original latency did.
   for (int i = 0; i < events.count; ++i) {
     const GameEvent& e = events.events[i];
     if (e.type == EV_SOUND) {
@@ -311,6 +358,7 @@ static void handle_events(const ClientEvents& events, const GameState& view, con
       } else if (e.a == SND_RIFLE || e.a == SND_LMG || e.a == SND_SHOTGUN ||
                  e.a == SND_ROCKET_LAUNCH) {
         int shooter = e.b;
+        if (shooter == local_index) continue;
         if (shooter >= 0 && shooter < MAX_PLAYERS && view.players[shooter].active) {
           spawn_weapon_fx(particles, fx_rng, view, map, shooter, e.a);
         }
@@ -324,6 +372,50 @@ static void handle_events(const ClientEvents& events, const GameState& view, con
       add_kill_feed(feed, view, e);
     }
   }
+}
+
+// F3 overlay. The point is to turn "it feels unoptimised" into numbers: which
+// stage costs what, and how bad the worst frames are rather than the average.
+static void draw_perf_overlay(Hud& hud, int w, int h, const FrameStats& f, const Renderer& r,
+                              const GameState& view, const GunFeel& gun) {
+  (void)w;
+  (void)h;
+  float p50 = frame_stats_percentile(f, f.frame_ms, 0.50f);
+  float p99 = frame_stats_percentile(f, f.frame_ms, 0.99f);
+  float cpu50 = frame_stats_percentile(f, f.cpu_ms, 0.50f);
+  float cpu99 = frame_stats_percentile(f, f.cpu_ms, 0.99f);
+
+  const float x = 18.0f;
+  float y = 44.0f;
+  const float line = 15.0f;
+  const Vec3 label{0.72f, 0.86f, 0.95f};
+  const Vec3 warn{1.00f, 0.62f, 0.35f};
+  hud_rect(hud, x - 8.0f, y - 10.0f, 268.0f, line * 10.0f + 14.0f, {0.03f, 0.05f, 0.07f}, 0.72f);
+
+  hud_text_shadow(hud, x, y, 1.0f, label, "frame  p50 %.2f ms   p99 %.2f ms", p50, p99);
+  y += line;
+  hud_text_shadow(hud, x, y, 1.0f, cpu99 > 8.0f ? warn : label,
+                  "cpu    p50 %.2f ms   p99 %.2f ms", cpu50, cpu99);
+  y += line;
+  hud_text_shadow(hud, x, y, 1.0f, label, "  sim/net   %.2f ms", f.last_sim_ms);
+  y += line;
+  hud_text_shadow(hud, x, y, 1.0f, label, "  render     %.2f ms", f.last_render_ms);
+  y += line;
+  hud_text_shadow(hud, x, y, 1.0f, label, "  swap/gpu   %.2f ms", f.last_swap_ms);
+  y += line;
+  hud_text_shadow(hud, x, y, 1.0f, label, "  idle wait  %.2f ms", f.last_wait_ms);
+  y += line;
+  int world_verts = r.arena.vertex_count;
+  int dyn_verts = r.dynamic_boxes.vertex_count;
+  hud_text_shadow(hud, x, y, 1.0f, label, "verts  world %d  dynamic %d", world_verts, dyn_verts);
+  y += line;
+  int alive = 0;
+  for (int i = 0; i < MAX_PLAYERS; ++i) {
+    if (view.players[i].active && view.players[i].alive) ++alive;
+  }
+  hud_text_shadow(hud, x, y, 1.0f, label, "players %d   shots fired %u", alive, gun.shots_fired);
+  y += line;
+  hud_text_shadow(hud, x, y, 1.0f, label, "draw calls 3 (sky, world, batch) + hud");
 }
 
 static void draw_status_hud(Hud& hud, int w, int h, const Client& client, const GameState& view,
@@ -654,6 +746,10 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
   float pitch = 0.0f;
   bool aim_initialized = false;
   bool map_mismatch_logged = false;
+  GunFeel gun{};
+  gunfeel_reset(gun);
+  FrameStats frame_stats{};
+  bool show_perf = false;
   float hitmarker_timer = 0.0f;
   float damage_timer = 0.0f;
   float copy_notice = 0.0f;
@@ -755,6 +851,7 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
           // Edge, not held state: copying once per keypress rather than once
           // per frame for as long as P is down.
           if (ev.key.key == SDLK_P && !ev.key.repeat) copy_position_request = true;
+          if (ev.key.key == SDLK_F3 && !ev.key.repeat) show_perf = !show_perf;
           if (ev.key.key == SDLK_1) selected_weapon = 1;
           if (ev.key.key == SDLK_2) selected_weapon = 2;
           if (ev.key.key == SDLK_3) {
@@ -773,6 +870,7 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
       }
     }
 
+    double t_stage = app_seconds();
     ClientEvents events{};
     client_receive(client, now, &events);
     PlayerInput in{};
@@ -788,6 +886,24 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
 
     GameState view;
     client_view_state(client, &view);
+
+    // The local shot. The server stays authoritative for damage; this only
+    // decides when the player sees and hears their own weapon, which used to
+    // wait for a snapshot to come back.
+    const bool have_local = client.player_index >= 0 && client.player_index < MAX_PLAYERS &&
+                            view.players[client.player_index].active;
+    if (have_local) {
+      const Player& me = view.players[client.player_index];
+      gunfeel_update(gun, dt, yaw, pitch, me.vel, me.on_ground);
+      bool want_fire = !settings_open && (in.buttons & BTN_FIRE) != 0;
+      if (gunfeel_try_fire(gun, me.weapon, want_fire, me.alive)) {
+        uint8_t sound = gunfeel_weapon_sound(me.weapon);
+        audio_play_3d(mixer, sound, me.pos, 1.0f);
+        spawn_weapon_fx(particles, fx_rng, view, map, client.player_index, sound);
+      }
+    } else {
+      gunfeel_update(gun, dt, yaw, pitch, {0.0f, 0.0f, 0.0f}, true);
+    }
 
     if (copy_notice > 0.0f) copy_notice -= dt;
     if (copy_position_request) {
@@ -839,8 +955,14 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
       }
       float eye_h = p.crouching ? CROUCH_EYE_HEIGHT : EYE_HEIGHT;
       cam.pos = p.pos + Vec3{0.0f, eye_h, 0.0f};
-      cam.yaw = yaw;
-      cam.pitch = pitch;
+      // View punch is added to the camera and nowhere else: `yaw`/`pitch` are
+      // what went to the server, so recoil changes how the gun feels without
+      // moving where the bullets go.
+      float punch_yaw = 0.0f;
+      float punch_pitch = 0.0f;
+      gunfeel_view_punch(gun, &punch_yaw, &punch_pitch);
+      cam.yaw = yaw + punch_yaw;
+      cam.pitch = clampf(pitch + punch_pitch, -1.5f, 1.5f);
       audio_set_listener(mixer, cam.pos, cam.yaw);
     } else {
       aim_initialized = false;
@@ -856,6 +978,8 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     for (int i = 0; i < 4; ++i) {
       if (kill_feed[i].time_left > 0.0f) kill_feed[i].time_left -= dt;
     }
+    frame_stats.last_sim_ms = static_cast<float>((app_seconds() - t_stage) * 1000.0);
+    t_stage = app_seconds();
     int w = 1280;
     int h = 720;
     SDL_GetWindowSizeInPixels(window, &w, &h);
@@ -892,6 +1016,19 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     }
     particles_render(particles, renderer, cam);
     renderer_flush_boxes(renderer);
+    if (have_local && view.players[client.player_index].alive) {
+      ViewModel vm{};
+      vm.offset = {0.115f, -0.095f, -0.26f};
+      vm.kick = gun.kick;
+      vm.sway_yaw = gun.sway_yaw;
+      vm.sway_pitch = gun.sway_pitch;
+      vm.bob_phase = gun.bob_phase;
+      vm.bob_amount = gun.bob_amount;
+      vm.weapon = view.players[client.player_index].weapon;
+      vm.color = player_color(client.player_index) *
+                 player_class_tint(view.players[client.player_index].player_class);
+      renderer_draw_viewmodel(renderer, vm);
+    }
     uint8_t local_weapon = WEAPON_RIFLE;
     uint8_t local_class = player_class_from_switch(selected_class);
     if (client.player_index >= 0 && client.player_index < MAX_PLAYERS &&
@@ -908,6 +1045,9 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     draw_first_person_hud(hud, w, h, local_weapon);
     draw_status_hud(hud, w, h, client, view, map, kill_feed, hitmarker_timer, damage_timer,
                     shown_fps, copy_notice);
+    if (show_perf) {
+      draw_perf_overlay(hud, w, h, frame_stats, renderer, view, gun);
+    }
     const bool* keys = SDL_GetKeyboardState(nullptr);
     if (settings_open) {
       draw_settings_menu(hud, w, h, settings, settings_selected);
@@ -915,7 +1055,16 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
       draw_scoreboard(hud, w, h, view, client.player_index);
     }
     hud_end(hud);
+    frame_stats.last_render_ms = static_cast<float>((app_seconds() - t_stage) * 1000.0);
+    t_stage = app_seconds();
     SDL_GL_SwapWindow(window);
+    frame_stats.last_swap_ms = static_cast<float>((app_seconds() - t_stage) * 1000.0);
+    // CPU cost of the frame, before any deliberate waiting. This is the number
+    // that says whether the game is expensive; the frame time after it also
+    // includes the limiter and vsync, which are supposed to be idle.
+    float cpu_ms = frame_stats.last_sim_ms + frame_stats.last_render_ms +
+                   frame_stats.last_swap_ms;
+    frame_stats_push(frame_stats, dt * 1000.0f, cpu_ms);
 
     // Frame pacing. There is deliberately no sleep in the uncapped case: the
     // old unconditional SDL_Delay(1) here is what pinned the client at roughly
@@ -930,8 +1079,13 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
       double now_after = app_seconds();
       // If we fell behind (a hitch, or a cap we cannot hit) start fresh rather
       // than trying to claw back the missed time with a burst of short frames.
-      if (next_frame_time < now_after) next_frame_time = now_after;
-      else wait_until(next_frame_time);
+      if (next_frame_time < now_after) {
+        next_frame_time = now_after;
+        frame_stats.last_wait_ms = 0.0f;
+      } else {
+        wait_until(next_frame_time);
+        frame_stats.last_wait_ms = static_cast<float>((next_frame_time - now_after) * 1000.0);
+      }
     }
   }
 

@@ -25,6 +25,7 @@ set(ARENA_SOURCES
   src/client/client.cpp
   src/client/config.cpp
   src/client/game_client.cpp
+  src/client/gunfeel.cpp
   src/client/menu.cpp
   src/core/log.cpp
   src/game/collision.cpp
@@ -62,6 +63,7 @@ add_executable(arena_tests
   tests/test_brush.cpp
   tests/test_collision.cpp
   tests/test_grid.cpp
+  tests/test_gunfeel.cpp
   tests/test_history.cpp
   tests/test_main.cpp
   tests/test_map.cpp

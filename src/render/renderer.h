@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/math.h"
+#include "game/game_state.h"
 #include "game/map.h"
 #include "render/mesh.h"
 
@@ -29,6 +30,8 @@ struct Renderer {
   Mat4 view, proj, view_proj;
   Mesh arena;
   Mesh dynamic_boxes;
+  Mat4 viewmodel_proj;
+  float aspect;
   MeshBuilder box_batch;
   Camera camera;
 };
@@ -41,4 +44,22 @@ void renderer_begin_boxes(Renderer& r);
 void renderer_queue_box(Renderer& r, Vec3 center, Vec3 size, Vec3 color, float yaw);
 void renderer_flush_boxes(Renderer& r);
 void renderer_draw_box(Renderer& r, Vec3 center, Vec3 size, Vec3 color, float yaw);
+
+// The weapon in the player's hands. Drawn last, in view space, with the depth
+// buffer cleared and a narrow field of view, so it never clips into a wall the
+// player is standing against and does not shear at the screen edges the way a
+// world-space model at 70 degrees would.
+//
+// `offset` is right/up/forward in camera space; `kick` is the recoil from
+// GunFeel, 1 at the moment of firing.
+struct ViewModel {
+  Vec3 offset;
+  float kick;
+  float sway_yaw, sway_pitch;
+  float bob_phase, bob_amount;
+  Vec3 color;
+  uint8_t weapon;
+};
+
+void renderer_draw_viewmodel(Renderer& r, const ViewModel& vm);
 void renderer_end_frame(Renderer& r);

@@ -217,6 +217,35 @@ Two things learned the hard way while tuning the steering, both measured:
   probe is a tenth of a second of warning at 12 m/s. Scaling it took falls out
   of the world from 16 per 30 matches to 0.
 
+## Weapon feel
+
+`src/client/gunfeel.h` owns everything about firing that must not wait for the
+server. The original client drove **every** weapon effect from the server's
+event stream, so pressing fire produced nothing - no flash, no tracer, not even
+a sound - until a snapshot came back: a tick of server latency plus the round
+trip. That is what "the gun feels unresponsive" was, and no amount of animation
+fixes it, because the animation was waiting on the same packet.
+
+Three rules hold this together:
+
+- **The local fire rate must match the server exactly.** `gunfeel_weapon_interval`
+  and `gunfeel_weapon_sound` mirror `weapons.cpp`; if they drift, the player is
+  watching a weapon that is not the one they are shooting.
+  `gunfeel_fire_rate_matches_the_server` drives both and compares.
+- **Suppress the server's echo of your own shot.** `handle_events` skips sound
+  events whose shooter is the local player, or every shot plays twice - once
+  immediately and once a fraction of a second later, which sounds worse than
+  the latency did.
+- **View punch goes on the camera, never on the input.** Recoil that moved the
+  aim would change the balance and would have to live in the shared simulation
+  for prediction to match. As a camera-only effect it costs nothing and risks
+  nothing.
+
+The punch is a spring, and a stiff one: it needs sub-stepping at 1/240 s, since
+a single 0.1 s step diverges. Clamping the frame time is not enough - a hitch
+still explodes it. Measured peaks under sustained fire are 2.6 degrees (rifle)
+to 4.1 (rocket), bounded, settling to exactly zero.
+
 ## Performance notes
 
 `Map` carries a uniform XZ grid (`MapGrid`) built at load time, and

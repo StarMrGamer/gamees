@@ -137,6 +137,10 @@ void renderer_begin_frame(Renderer& r, const Camera& cam, int fb_w, int fb_h, co
   r.view = camera_view(cam);
   r.proj = mat4_perspective(70.0f * PI / 180.0f, aspect, 0.05f, 500.0f);
   r.view_proj = mat4_mul(r.proj, r.view);
+  // A narrower field of view for the weapon. At the world's 70 degrees a model
+  // this close to the camera stretches badly toward the screen edge.
+  r.aspect = aspect;
+  r.viewmodel_proj = mat4_perspective(48.0f * PI / 180.0f, aspect, 0.01f, 8.0f);
   glViewport(0, 0, fb_w, fb_h);
   glEnable(GL_DEPTH_TEST);
   glDepthFunc(GL_LEQUAL);
@@ -171,6 +175,48 @@ void renderer_draw_world(Renderer& r) {
   glUniformMatrix4fv(r.u_mvp, 1, GL_FALSE, r.view_proj.m);
   glUniform3f(r.u_tint, 1.0f, 1.0f, 1.0f);
   mesh_draw(r.arena);
+}
+
+void renderer_draw_viewmodel(Renderer& r, const ViewModel& vm) {
+  // Its own depth range: the world has already been drawn and the gun must sit
+  // in front of all of it, including a wall pressed against the player's face.
+  glClear(GL_DEPTH_BUFFER_BIT);
+
+  float bob_x = std::sin(vm.bob_phase) * 0.014f * vm.bob_amount;
+  float bob_y = std::sin(vm.bob_phase * 2.0f) * 0.010f * vm.bob_amount;
+  // Recoil drives the model back along its own axis and tips the muzzle up.
+  float back = vm.kick * 0.075f;
+  float rise = vm.kick * 0.022f;
+
+  Vec3 base{vm.offset.x + bob_x + vm.sway_yaw * 0.55f,
+            vm.offset.y + bob_y + vm.sway_pitch * 0.55f - rise,
+            vm.offset.z - back};
+
+  r.box_batch.verts.clear();
+  // A body, a barrel and a stock. Crude, but it is a solid object that moves
+  // with the hands, which is the part that was missing.
+  Vec3 body_col = vm.color;
+  Vec3 dark = vm.color * 0.62f;
+  float len = vm.weapon == WEAPON_ROCKET ? 0.46f : (vm.weapon == WEAPON_SHOTGUN ? 0.40f : 0.36f);
+  float bore = vm.weapon == WEAPON_ROCKET ? 0.072f : 0.032f;
+  r.box_batch.add_box_yaw(base + Vec3{0.0f, 0.0f, -0.06f}, {0.075f, 0.090f, 0.20f}, body_col, 0.0f);
+  r.box_batch.add_box_yaw(base + Vec3{0.0f, 0.022f, -0.06f - len * 0.5f},
+                          {bore, bore, len}, dark, 0.0f);
+  r.box_batch.add_box_yaw(base + Vec3{0.0f, -0.055f, 0.03f}, {0.055f, 0.105f, 0.075f}, dark, 0.0f);
+  if (r.box_batch.verts.empty()) return;
+
+  // View space is the identity view: the model is already positioned relative
+  // to the camera, so only the projection applies.
+  Mat4 model = mat4_identity();
+  glUniformMatrix4fv(r.u_model, 1, GL_FALSE, model.m);
+  glUniformMatrix4fv(r.u_mvp, 1, GL_FALSE, r.viewmodel_proj.m);
+  // Muzzle flash brightens the whole model for the frames right after a shot.
+  float flash = 1.0f + vm.kick * 0.9f;
+  glUniform3f(r.u_tint, flash, flash, flash);
+  mesh_update(r.dynamic_boxes, r.box_batch.verts.data(),
+              static_cast<int>(r.box_batch.verts.size()));
+  mesh_draw(r.dynamic_boxes);
+  glUniform3f(r.u_tint, 1.0f, 1.0f, 1.0f);
 }
 
 void renderer_begin_boxes(Renderer& r) {

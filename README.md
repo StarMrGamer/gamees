@@ -61,9 +61,21 @@ join commands in the terminal. Other players can join with `--connect IP:27950`
 or by choosing Join by IP from the startup menu. Internet play still requires
 the host's router/firewall to allow UDP on the chosen port.
 
+Firing is predicted locally: the muzzle flash, tracer, report and view punch
+all happen on the frame the button goes down, rather than when the server's
+snapshot comes back. The server stays authoritative for damage - this only
+decides when you see and hear your own gun. View punch is applied to the camera
+only, so recoil never moves where your bullets go.
+
 Controls in the SDL client are WASD movement, Space jump by default, Left Shift
 dash, Ctrl/C crouch, F fire, arrow keys look, 1 class primary, 2 rocket, 3/4/5
 class switch (Ranger/Scout/Tank), and Escape for the settings menu.
+
+**F3** shows a performance overlay: frame time p50/p99, the CPU cost split into
+sim/net, render and swap, how much of the frame was spent deliberately idle in
+the frame limiter, and the vertex and draw-call counts. Percentiles rather than
+an average, because a 4 ms mean with a 40 ms hitch every second reads as
+250 fps and feels awful.
 
 Two map-inspection aids: **N** toggles noclip (fly through geometry, no gravity,
 WASD plus Space/Ctrl for up and down, hold Shift to move faster), and **P**
