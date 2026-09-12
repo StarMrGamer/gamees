@@ -259,19 +259,41 @@ static Vec3 weapon_tracer_color(uint8_t sound) {
   }
 }
 
-// Draw one hitscan tracer from muzzle to its first wall/player intersection,
-// with a spark burst on a wall impact. Endpoints are resolved against the
-// client's own view + map, so tracers are pure local juice (no protocol cost).
+// How each weapon's round reads in flight. The shotgun fires seven of these at
+// once, so its streak is deliberately the shortest and slowest - a full-length
+// tracer per pellet is a wall of light and a seventh of the particle pool.
+struct TracerStyle {
+  float speed;   // m/s; hitscan is instant in the simulation, this is the look
+  int dots;
+  float size;
+};
+
+static TracerStyle tracer_style(uint8_t sound) {
+  switch (sound) {
+    case SND_SHOTGUN: return {200.0f, 3, 0.034f};
+    case SND_LMG: return {330.0f, 4, 0.030f};
+    default: return {420.0f, 6, 0.042f};  // rifle
+  }
+}
+
+// Draw one hitscan tracer from muzzle to its first wall/player intersection.
+// Endpoints are resolved against the client's own view + map, so tracers are
+// pure local juice with no protocol cost.
 static void trace_one(ParticleSystem& particles, Rng& rng, const GameState& view, const Map& map,
-                      int shooter, Vec3 muzzle, Vec3 dir, float range, Vec3 color) {
+                      int shooter, Vec3 muzzle, Vec3 dir, float range, Vec3 color,
+                      const TracerStyle& style) {
   float wall_t = ray_map(map, muzzle, dir, range);
   float hit_t = wall_t;
   int hit = find_player_ray_hit(view, muzzle, dir, wall_t, shooter, &hit_t);
   float end_t = hit >= 0 ? hit_t : wall_t;
   Vec3 end = muzzle + dir * end_t;
-  particles_tracer(particles, muzzle, end, color);
+  particles_tracer(particles, muzzle, end, color, style.speed, style.dots, style.size);
+  // Geometry impacts are safe to predict - the map is the same everywhere - and
+  // are delayed to land as the streak arrives. Hits on a *player* are not
+  // predicted: the server decides those, and a puff on a shot that missed is
+  // worse than one that arrives late.
   if (hit < 0 && wall_t < range) {
-    particles_sparks(particles, rng, end, dir * -1.0f);
+    particles_impact(particles, rng, end, dir, end_t / style.speed);
   }
 }
 
@@ -290,14 +312,15 @@ static void spawn_weapon_fx(ParticleSystem& particles, Rng& rng, const GameState
   float range = sound == SND_LMG ? LMG_RANGE : (sound == SND_SHOTGUN ? SHOTGUN_RANGE : RIFLE_RANGE);
   Vec3 base = weapon_converged_dir(view, map, shooter, eye, aim, muzzle, range);
   Vec3 color = weapon_tracer_color(sound);
+  TracerStyle style = tracer_style(sound);
   if (sound == SND_SHOTGUN) {
     Vec3 right = angles_right(sp.yaw);
     for (int pellet = 0; pellet < SHOTGUN_PELLETS; ++pellet) {
       trace_one(particles, rng, view, map, shooter, muzzle,
-                shotgun_pellet_dir(base, right, pellet), SHOTGUN_RANGE, color);
+                shotgun_pellet_dir(base, right, pellet), SHOTGUN_RANGE, color, style);
     }
   } else {
-    trace_one(particles, rng, view, map, shooter, muzzle, base, range, color);
+    trace_one(particles, rng, view, map, shooter, muzzle, base, range, color, style);
   }
 }
 
@@ -651,7 +674,7 @@ static void draw_first_person_hud(Hud& hud, int w, int h, uint8_t weapon) {
 }
 
 int game_client_main(NetAddress server, const char* player_name, ServerThread* owned_server,
-                     const char* map_path, ClientSettings settings) {
+                     const char* map_path, ClientSettings settings, const char* perf_log) {
   if (owned_server) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
@@ -750,6 +773,19 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
   gunfeel_reset(gun);
   FrameStats frame_stats{};
   bool show_perf = false;
+  double perf_next_report = 0.0;
+  FILE* perf_file = nullptr;
+  if (perf_log && perf_log[0]) {
+    perf_file = std::fopen(perf_log, "w");
+    if (perf_file) {
+      std::fprintf(perf_file,
+                   "seconds,fps,frame_p50_ms,frame_p99_ms,cpu_p50_ms,cpu_p99_ms,"
+                   "sim_ms,render_ms,swap_ms,idle_ms,world_verts,dynamic_verts,players\n");
+      log_info("logging frame timings to '%s'", perf_log);
+    } else {
+      log_warn("could not open perf log '%s'", perf_log);
+    }
+  }
   float hitmarker_timer = 0.0f;
   float damage_timer = 0.0f;
   float copy_notice = 0.0f;
@@ -1066,6 +1102,36 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
                    frame_stats.last_swap_ms;
     frame_stats_push(frame_stats, dt * 1000.0f, cpu_ms);
 
+    if ((perf_file || show_perf) && now >= perf_next_report) {
+      perf_next_report = now + 0.25;
+      float p50 = frame_stats_percentile(frame_stats, frame_stats.frame_ms, 0.50f);
+      float p99 = frame_stats_percentile(frame_stats, frame_stats.frame_ms, 0.99f);
+      float c50 = frame_stats_percentile(frame_stats, frame_stats.cpu_ms, 0.50f);
+      float c99 = frame_stats_percentile(frame_stats, frame_stats.cpu_ms, 0.99f);
+      int alive = 0;
+      for (int i = 0; i < MAX_PLAYERS; ++i) {
+        if (view.players[i].active && view.players[i].alive) ++alive;
+      }
+      if (perf_file) {
+        std::fprintf(perf_file, "%.2f,%.1f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%d\n",
+                     now, shown_fps, p50, p99, c50, c99, frame_stats.last_sim_ms,
+                     frame_stats.last_render_ms, frame_stats.last_swap_ms,
+                     frame_stats.last_wait_ms, renderer.arena.vertex_count,
+                     renderer.dynamic_boxes.vertex_count, alive);
+        std::fflush(perf_file);  // survive a crash or a kill; this is diagnostic
+      }
+      // While the overlay is up, mirror it to the terminal once a second so a
+      // session can be pasted rather than screenshotted.
+      static int throttle = 0;
+      if (show_perf && (throttle++ % 4) == 0) {
+        log_info("perf: %.0f fps | frame p50 %.2f p99 %.2f ms | cpu p50 %.2f p99 %.2f ms"
+                 " | sim %.2f render %.2f swap %.2f idle %.2f",
+                 static_cast<double>(shown_fps), p50, p99, c50, c99,
+                 frame_stats.last_sim_ms, frame_stats.last_render_ms,
+                 frame_stats.last_swap_ms, frame_stats.last_wait_ms);
+      }
+    }
+
     // Frame pacing. There is deliberately no sleep in the uncapped case: the
     // old unconditional SDL_Delay(1) here is what pinned the client at roughly
     // 1000 fps regardless of how fast the machine was.
@@ -1089,6 +1155,10 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     }
   }
 
+  if (perf_file) {
+    std::fclose(perf_file);
+    log_info("frame timing log written to '%s'", perf_log);
+  }
   client_disconnect(client);
   client_config_save(settings);
   audio_shutdown(mixer);

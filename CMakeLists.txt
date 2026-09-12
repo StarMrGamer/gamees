@@ -75,6 +75,7 @@ add_executable(arena_tests
   tests/test_movement.cpp
   tests/test_nav.cpp
   tests/test_net.cpp
+  tests/test_particles.cpp
   tests/test_snapshot.cpp
   tests/test_weapons.cpp
   ${ARENA_SOURCES}

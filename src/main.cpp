@@ -92,6 +92,7 @@ static void print_usage() {
       "  --match-seconds N              --eval time limit per match (default 180)\n"
       "  --eval-a NAME, --eval-b NAME   agents to pit: simple | easy | normal | hard | demon\n"
       "  --bot-skill NAME               --bot difficulty: easy | normal | hard | demon (default normal)\n"
+      "  --perf-log FILE                write per-quarter-second frame timings to FILE as CSV\n"
       "  --handicap-a F, --handicap-b F 0 = full strength, 1 = maximally handicapped\n"
       "  --seed N, --trace-every N      --simulate determinism seed and trace sampling\n"
       "  --json                         machine-readable output for tool modes\n"
@@ -195,6 +196,7 @@ int main(int argc, char** argv) {
   // field of view and 515 deg/s of aim; it exists to be a fixed yardstick for
   // measurement, not an opponent.
   int bot_skill = SKILL_NORMAL;
+  const char* perf_log = nullptr;
   NetCheckOptions netcheck_options;
   Vec3 probe_pos{};
   uint16_t port = DEFAULT_PORT;
@@ -228,6 +230,8 @@ int main(int argc, char** argv) {
       }
     } else if (std::strcmp(argv[i], "--eval") == 0) {
       mode = MODE_EVAL;
+    } else if (std::strcmp(argv[i], "--perf-log") == 0 && i + 1 < argc) {
+      perf_log = argv[++i];
     } else if (std::strcmp(argv[i], "--bot-skill") == 0 && i + 1 < argc) {
       AgentSkill parsed = SKILL_NORMAL;
       if (!agent_skill_parse(argv[++i], &parsed)) {
@@ -577,7 +581,7 @@ int main(int argc, char** argv) {
     std::snprintf(local, sizeof(local), "127.0.0.1:%u", port);
     NetAddress server{};
     if (!net_address_parse(local, port, &server)) fatal_error("failed to parse loopback address");
-    return game_client_main(server, name, &st, map_path, client_settings);
+    return game_client_main(server, name, &st, map_path, client_settings, perf_log);
   }
 
   NetAddress server{};
@@ -589,5 +593,5 @@ int main(int argc, char** argv) {
     return bot_main(server, name, 0, bot_skill);
   }
 
-  return game_client_main(server, name, nullptr, map_path, client_settings);
+  return game_client_main(server, name, nullptr, map_path, client_settings, perf_log);
 }

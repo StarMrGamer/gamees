@@ -71,9 +71,16 @@ Controls in the SDL client are WASD movement, Space jump by default, Left Shift
 dash, Ctrl/C crouch, F fire, arrow keys look, 1 class primary, 2 rocket, 3/4/5
 class switch (Ranger/Scout/Tank), and Escape for the settings menu.
 
+Bullets leave a tracer that actually flies - a short streak launched from the
+muzzle at 200-420 m/s depending on the weapon, terminating in a dust puff timed
+to land as it arrives. The shotgun's seven pellets get the shortest and slowest
+streaks, since seven full-length tracers at once are a wall of light.
+
 **F3** shows a performance overlay: frame time p50/p99, the CPU cost split into
 sim/net, render and swap, how much of the frame was spent deliberately idle in
-the frame limiter, and the vertex and draw-call counts. Percentiles rather than
+the frame limiter, and the vertex and draw-call counts. It also mirrors a line
+to the terminal once a second, and `--perf-log FILE` writes the same figures as
+CSV four times a second whether the overlay is up or not. Percentiles rather than
 an average, because a 4 ms mean with a 40 ms hitch every second reads as
 250 fps and feels awful.
 

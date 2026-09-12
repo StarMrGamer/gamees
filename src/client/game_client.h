@@ -58,6 +58,11 @@ inline bool airjump_bind_pressed(uint8_t bind, bool lalt_down, bool space_down, 
   }
 }
 
+// `perf_log`, when non-null, is a CSV file the client appends a row of frame
+// timings to four times a second. It exists so a performance complaint can be
+// answered with a trace from the machine that has the problem rather than with
+// numbers read off a screen and retyped.
 int game_client_main(NetAddress server, const char* player_name, ServerThread* owned_server,
                      const char* map_path = "maps/arena.txt",
-                     ClientSettings settings = ClientSettings{});
+                     ClientSettings settings = ClientSettings{},
+                     const char* perf_log = nullptr);

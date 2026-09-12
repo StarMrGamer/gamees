@@ -241,6 +241,22 @@ Three rules hold this together:
   for prediction to match. As a camera-only effect it costs nothing and risks
   nothing.
 
+Tracers travel. The original spawned the whole line at once - up to 36 dots
+hanging in the air for 60 ms - which reads as a laser rather than a round in
+flight, and was ruinous for the 2048-particle pool: a shotgun blast traced seven
+pellets at 36 dots each, **252 particles from one trigger pull**, starving
+explosions and sparks of slots. A streak is launched with real velocity instead,
+each dot given exactly enough life to cover its own head start so the whole
+thing arrives together and vanishes into the surface. A blast is now under 80.
+
+`Particle::delay` exists so a wall impact lands as the streak arrives rather
+than a few frames early. A delayed particle must not age, move *or* draw -
+getting any one of those wrong makes the debris drift before it appears.
+
+Geometry impacts are predicted locally; hits on a **player** are not. The map is
+the same on every machine, so a wall puff is safe; a puff on a shot that turns
+out to have missed is worse than one that arrives late.
+
 The punch is a spring, and a stiff one: it needs sub-stepping at 1/240 s, since
 a single 0.1 s step diverges. Clamping the frame time is not enough - a hitch
 still explodes it. Measured peaks under sustained fire are 2.6 degrees (rifle)

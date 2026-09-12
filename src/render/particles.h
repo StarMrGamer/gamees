@@ -10,6 +10,11 @@ struct Particle {
   Vec3 color;
   float life, max_life, size;
   bool gravity;
+  // Seconds before the particle appears or moves. Added last so the existing
+  // aggregate initialisers keep working and default it to zero. It exists so an
+  // impact can land exactly when the tracer reaches the wall rather than a few
+  // frames early.
+  float delay;
 };
 
 struct ParticleSystem {
@@ -25,4 +30,12 @@ void particles_explosion(ParticleSystem& ps, Rng& rng, Vec3 pos);
 void particles_sparks(ParticleSystem& ps, Rng& rng, Vec3 pos, Vec3 normal);
 void particles_muzzle_flash(ParticleSystem& ps, Rng& rng, Vec3 pos, Vec3 dir);
 void particles_trail(ParticleSystem& ps, Rng& rng, Vec3 pos);
-void particles_tracer(ParticleSystem& ps, Vec3 start, Vec3 end, Vec3 color);
+// A tracer that actually travels: a short streak of dots flying from the muzzle
+// and terminating at the impact point, rather than the whole line appearing at
+// once. `dots` is the streak length in particles - keep it small, a shotgun
+// fires seven of these at once.
+void particles_tracer(ParticleSystem& ps, Vec3 start, Vec3 end, Vec3 color, float speed,
+                      int dots, float size);
+// Dust and sparks where a round meets geometry, delayed to coincide with the
+// tracer's arrival. `incoming` is the direction of travel; debris sprays back.
+void particles_impact(ParticleSystem& ps, Rng& rng, Vec3 pos, Vec3 incoming, float delay);
