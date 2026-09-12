@@ -71,6 +71,20 @@ void particles_trail(ParticleSystem& ps, Rng& rng, Vec3 pos) {
   spawn_particle(ps, {pos, {rng_float(rng, -0.2f, 0.2f), rng_float(rng, -0.2f, 0.2f), rng_float(rng, -0.2f, 0.2f)}, {0.42f, 0.42f, 0.42f}, 0.45f, 0.45f, 0.08f, false, 0.0f});
 }
 
+void particles_emit_rate(ParticleSystem& ps, Rng& rng, Vec3 pos, float* accum, float dt,
+                         float per_second, int max_burst) {
+  if (!accum || per_second <= 0.0f || dt <= 0.0f) return;
+  const float interval = 1.0f / per_second;
+  *accum += dt;
+  int budget = max_burst > 0 ? max_burst : 1;
+  while (*accum >= interval && budget-- > 0) {
+    *accum -= interval;
+    particles_trail(ps, rng, pos);
+  }
+  // A long frame must not leave a debt that fires as a burst next frame.
+  if (*accum > interval) *accum = 0.0f;
+}
+
 // A tracer that travels.
 //
 // The old one spawned the entire line at once - up to 36 dots hanging in the

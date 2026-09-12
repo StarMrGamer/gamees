@@ -1,5 +1,6 @@
 #include "client/game_client.h"
 
+#include "client/bot.h"
 #include "client/gunfeel.h"
 
 #include "audio/mixer.h"
@@ -674,7 +675,8 @@ static void draw_first_person_hud(Hud& hud, int w, int h, uint8_t weapon) {
 }
 
 int game_client_main(NetAddress server, const char* player_name, ServerThread* owned_server,
-                     const char* map_path, ClientSettings settings, const char* perf_log) {
+                     const char* map_path, ClientSettings settings, const char* perf_log,
+                     int bots, int bot_skill) {
   if (owned_server) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
@@ -758,6 +760,10 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     log_error("failed to start client socket");
   }
 
+  // Bots are threads of this process, not background commands, so closing the
+  // game is guaranteed to take them with it.
+  BotSwarm* swarm = bot_swarm_start(server, bots, bot_skill);
+
   bool running = true;
   uint8_t selected_weapon = 1;
   uint8_t selected_class = settings.player_class < PLAYER_CLASS_COUNT
@@ -771,6 +777,7 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
   bool map_mismatch_logged = false;
   GunFeel gun{};
   gunfeel_reset(gun);
+  float rocket_trail_accum[MAX_ROCKETS] = {};
   FrameStats frame_stats{};
   bool show_perf = false;
   double perf_next_report = 0.0;
@@ -1038,10 +1045,18 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     }
     for (int i = 0; i < MAX_ROCKETS; ++i) {
       const Rocket& r = view.rockets[i];
-      if (r.active) {
-        particles_trail(particles, fx_rng, r.pos);
-        renderer_queue_box(renderer, r.pos, {0.18f, 0.18f, 0.55f}, {1.0f, 0.46f, 0.10f}, 0.0f);
+      if (!r.active) {
+        rocket_trail_accum[i] = 0.0f;
+        continue;
       }
+      // Smoke is emitted at a fixed rate, not once per frame. Spawning per
+      // frame made the trail's density a function of the frame rate: at the
+      // ~2950 fps this runs at, one rocket produced 2950 puffs a second and,
+      // at 0.45 s of life, over a thousand live particles - two rockets filled
+      // the 2048-particle pool by themselves and every other effect started
+      // getting dropped.
+      particles_emit_rate(particles, fx_rng, r.pos, &rocket_trail_accum[i], dt, 90.0f, 4);
+      renderer_queue_box(renderer, r.pos, {0.18f, 0.18f, 0.55f}, {1.0f, 0.46f, 0.10f}, 0.0f);
     }
     for (int i = 0; i < view.pickup_count; ++i) {
       const Pickup& p = view.pickups[i];
@@ -1155,6 +1170,7 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     }
   }
 
+  bot_swarm_stop(swarm);
   if (perf_file) {
     std::fclose(perf_file);
     log_info("frame timing log written to '%s'", perf_log);

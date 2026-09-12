@@ -149,3 +149,54 @@ TEST(tracer_ignores_a_degenerate_shot) {
     CHECK(std::isfinite(ps->pool[k].life));
   }
 }
+
+// A continuous effect must not get denser as the machine gets faster. Spawning
+// once per frame made a rocket's smoke trail a function of the frame rate: at
+// the ~2950 fps this client actually runs at, one rocket produced over a
+// thousand live particles and two filled the entire pool, so every other
+// effect started being silently dropped.
+TEST(rate_emitter_is_independent_of_frame_rate) {
+  const float seconds = 1.0f;
+  const float rate = 90.0f;
+  int counts[4] = {0, 0, 0, 0};
+  const int fps_cases[4] = {60, 144, 1000, 2950};
+
+  for (int c = 0; c < 4; ++c) {
+    auto ps = std::make_unique<ParticleSystem>();
+    particles_init(*ps);
+    Rng rng{0x77ull};
+    float accum = 0.0f;
+    float dt = 1.0f / static_cast<float>(fps_cases[c]);
+    int spawned = 0;
+    int steps = static_cast<int>(seconds * fps_cases[c]);
+    for (int i = 0; i < steps; ++i) {
+      int before = alive_count(*ps);
+      particles_emit_rate(*ps, rng, {0.0f, 0.0f, 0.0f}, &accum, dt, rate, 4);
+      spawned += alive_count(*ps) - before;
+      particles_update(*ps, dt);
+    }
+    counts[c] = spawned;
+  }
+  // Every frame rate should emit close to `rate` particles in a second.
+  for (int c = 0; c < 4; ++c) {
+    CHECK(counts[c] > static_cast<int>(rate * 0.8f));
+    CHECK(counts[c] < static_cast<int>(rate * 1.2f));
+  }
+  // And none of them may approach the pool, which one rocket used to do.
+  for (int c = 0; c < 4; ++c) CHECK(counts[c] < MAX_PARTICLES / 4);
+}
+
+// A hitch must cost a gap in the trail, not a burst that empties the pool.
+TEST(rate_emitter_does_not_burst_after_a_hitch) {
+  auto ps = std::make_unique<ParticleSystem>();
+  particles_init(*ps);
+  Rng rng{0x5ull};
+  float accum = 0.0f;
+  particles_emit_rate(*ps, rng, {0, 0, 0}, &accum, 2.0f, 90.0f, 4);
+  CHECK(alive_count(*ps) <= 4);   // bounded by max_burst, not 180
+  // And the carry is cleared, so the next frame is normal rather than another
+  // catch-up burst.
+  int before = alive_count(*ps);
+  particles_emit_rate(*ps, rng, {0, 0, 0}, &accum, 1.0f / 90.0f, 90.0f, 4);
+  CHECK(alive_count(*ps) - before <= 1);
+}

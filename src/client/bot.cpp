@@ -7,10 +7,14 @@
 #include "game/game_state.h"
 #include "game/tuning.h"
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <memory>
+#include <string>
 #include <thread>
+#include <vector>
 
 static double bot_now() {
   using Clock = std::chrono::steady_clock;
@@ -18,7 +22,8 @@ static double bot_now() {
   return std::chrono::duration<double>(Clock::now() - start).count();
 }
 
-int bot_main(NetAddress server, const char* name, int lifetime_seconds, int skill) {
+static int bot_run(NetAddress server, const char* name, int lifetime_seconds, int skill,
+                   std::atomic<bool>* stop) {
   auto client = std::make_unique<Client>();
   Client& c = *client;
   if (!client_start(c, server, name ? name : "bot")) return 1;
@@ -33,6 +38,7 @@ int bot_main(NetAddress server, const char* name, int lifetime_seconds, int skil
 
   double start = bot_now();
   double last = start;
+  double last_connected = start;
   uint32_t sequence = 0;
   bool nav_ready = false;
   while (lifetime_seconds <= 0 || bot_now() - start < lifetime_seconds) {
@@ -43,6 +49,16 @@ int bot_main(NetAddress server, const char* name, int lifetime_seconds, int skil
 
     ClientEvents events{};
     client_receive(c, now, &events);
+    // A bot whose server has gone must not sit there forever. Without this a
+    // backgrounded bot survives the game that spawned it and turns up in the
+    // next session.
+    if (c.state == CLIENT_CONNECTED) {
+      last_connected = now;
+    } else if (c.state == CLIENT_REJECTED || now - last_connected > 10.0) {
+      log_info("bot '%s' leaving: no server", name ? name : "bot");
+      break;
+    }
+    if (stop && stop->load(std::memory_order_relaxed)) break;
 
     PlayerInput in{};
     // The agent needs a world to reason about. That is exactly what the
@@ -70,4 +86,38 @@ int bot_main(NetAddress server, const char* name, int lifetime_seconds, int skil
   }
   client_disconnect(c);
   return 0;
+}
+
+int bot_main(NetAddress server, const char* name, int lifetime_seconds, int skill) {
+  return bot_run(server, name, lifetime_seconds, skill, nullptr);
+}
+
+struct BotSwarm {
+  std::atomic<bool> stop{false};
+  std::vector<std::thread> threads;
+};
+
+BotSwarm* bot_swarm_start(NetAddress server, int count, int skill) {
+  if (count <= 0) return nullptr;
+  BotSwarm* swarm = new BotSwarm();
+  for (int i = 0; i < count; ++i) {
+    char name[16];
+    std::snprintf(name, sizeof(name), "bot%d", i + 1);
+    std::string owned(name);
+    swarm->threads.emplace_back([swarm, server, owned, skill]() {
+      bot_run(server, owned.c_str(), 0, skill, &swarm->stop);
+    });
+  }
+  log_info("%d bot%s joining at %s difficulty", count, count == 1 ? "" : "s",
+           agent_skill_name(static_cast<AgentSkill>(skill)));
+  return swarm;
+}
+
+void bot_swarm_stop(BotSwarm* swarm) {
+  if (!swarm) return;
+  swarm->stop.store(true, std::memory_order_relaxed);
+  for (std::thread& t : swarm->threads) {
+    if (t.joinable()) t.join();
+  }
+  delete swarm;
 }

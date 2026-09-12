@@ -65,4 +65,4 @@ inline bool airjump_bind_pressed(uint8_t bind, bool lalt_down, bool space_down, 
 int game_client_main(NetAddress server, const char* player_name, ServerThread* owned_server,
                      const char* map_path = "maps/arena.txt",
                      ClientSettings settings = ClientSettings{},
-                     const char* perf_log = nullptr);
+                     const char* perf_log = nullptr, int bots = 0, int bot_skill = 1);
