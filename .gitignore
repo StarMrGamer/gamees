@@ -18,3 +18,4 @@
 
 # Local client config, written by the game at runtime
 /arena.cfg
+build-win/

@@ -1,6 +1,7 @@
 #include "game/map.h"
 
 #include "core/log.h"
+#include "game/embedded_maps.h"
 
 #include <cerrno>
 #include <cmath>
@@ -530,6 +531,15 @@ bool map_load(const char* path, Map* out) {
   std::string resolved;
   FILE* f = open_map_file(path, &resolved);
   if (!f) {
+    // Nothing on disk, so fall back to the copy baked into the executable. Disk
+    // is tried first on purpose: during development an edited map beside the
+    // binary has to win over the one compiled in, or every change would need a
+    // rebuild to be visible.
+    int size = 0;
+    if (const char* baked = embedded_map_text(path, &size)) {
+      log_info("map '%s' loaded from the executable (%d bytes)", path, size);
+      return map_parse(baked, out);  // unchanged
+    }
     log_error("failed to open map '%s': %s", path, std::strerror(errno));
     return false;
   }

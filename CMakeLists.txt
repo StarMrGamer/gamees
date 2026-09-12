@@ -10,6 +10,13 @@ include(FetchContent)
 
 find_package(SDL3 QUIET)
 if(NOT SDL3_FOUND)
+  # Build SDL statically. Together with the embedded maps this makes the
+  # produced executable the only file needed to run the game - no SDL3.dll
+  # beside it, no maps/ directory. A system SDL3 (the usual Linux case) is used
+  # as found; this only affects the fetched build, which is what Windows uses.
+  set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+  set(SDL_STATIC ON CACHE BOOL "" FORCE)
+  set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
   FetchContent_Declare(
     SDL3
     URL https://github.com/libsdl-org/SDL/archive/refs/tags/release-3.2.0.tar.gz
@@ -17,7 +24,31 @@ if(NOT SDL3_FOUND)
   FetchContent_MakeAvailable(SDL3)
 endif()
 
+# The static build exports a differently named target.
+if(TARGET SDL3::SDL3-static)
+  set(ARENA_SDL SDL3::SDL3-static)
+else()
+  set(ARENA_SDL SDL3::SDL3)
+endif()
+
+# Maps are compiled into the binary so the executable is the only file needed to
+# run the game. Regenerated whenever a map changes, at build time rather than by
+# hand, so what ships inside the exe cannot drift from maps/.
+set(ARENA_EMBEDDED_MAPS "${CMAKE_BINARY_DIR}/generated/embedded_maps.cpp")
+file(GLOB ARENA_MAP_FILES "${CMAKE_SOURCE_DIR}/maps/*.txt")
+add_custom_command(
+  OUTPUT "${ARENA_EMBEDDED_MAPS}"
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/generated"
+  COMMAND ${CMAKE_COMMAND}
+          -DMAPS_DIR=${CMAKE_SOURCE_DIR}/maps
+          -DOUTPUT=${ARENA_EMBEDDED_MAPS}
+          -P ${CMAKE_SOURCE_DIR}/cmake/embed_maps.cmake
+  DEPENDS ${ARENA_MAP_FILES} "${CMAKE_SOURCE_DIR}/cmake/embed_maps.cmake"
+  COMMENT "Embedding maps into the executable"
+  VERBATIM)
+
 set(ARENA_SOURCES
+  ${ARENA_EMBEDDED_MAPS}
   src/ai/agent.cpp
   src/audio/mixer.cpp
   src/audio/synth.cpp
@@ -55,7 +86,7 @@ set(ARENA_SOURCES
 
 add_executable(arena src/main.cpp ${ARENA_SOURCES})
 target_include_directories(arena PRIVATE src)
-target_link_libraries(arena PRIVATE SDL3::SDL3)
+target_link_libraries(arena PRIVATE ${ARENA_SDL})
 
 add_executable(arena_tests
   tests/test_agent.cpp
@@ -72,6 +103,7 @@ add_executable(arena_tests
   tests/test_math.cpp
   tests/test_audio.cpp
   tests/test_config.cpp
+  tests/test_embedded_maps.cpp
   tests/test_movement.cpp
   tests/test_nav.cpp
   tests/test_net.cpp
@@ -81,7 +113,7 @@ add_executable(arena_tests
   ${ARENA_SOURCES}
 )
 target_include_directories(arena_tests PRIVATE src tests)
-target_link_libraries(arena_tests PRIVATE SDL3::SDL3)
+target_link_libraries(arena_tests PRIVATE ${ARENA_SDL})
 
 if(WIN32)
   target_link_libraries(arena PRIVATE ws2_32)
@@ -98,8 +130,13 @@ if(WIN32)
     target_link_options(arena_tests PRIVATE -Wl,--stack,8388608)
   endif()
   if(MINGW)
-    target_link_options(arena PRIVATE -static-libgcc -static-libstdc++ -Wl,-Bstatic,-lwinpthread,-Bdynamic)
-    target_link_options(arena_tests PRIVATE -static-libgcc -static-libstdc++ -Wl,-Bstatic,-lwinpthread,-Bdynamic)
+    # Plain `-static`, not the narrower -static-libgcc/-static-libstdc++ pair.
+    # Those leave libwinpthread-1.dll as a real import - libstdc++ pulls it in
+    # after the -Bdynamic switches back - so the executable still needed a
+    # MinGW runtime DLL beside it. Verified with objdump: the only imports left
+    # now are DLLs that ship with Windows.
+    target_link_options(arena PRIVATE -static)
+    target_link_options(arena_tests PRIVATE -static)
   endif()
 endif()
 

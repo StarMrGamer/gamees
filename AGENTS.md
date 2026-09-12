@@ -61,6 +61,37 @@ All of them exit non-zero on failure. Two things worth knowing:
   meant to use, and the reachable-position metric is too coarse to notice.
   `docs/AGENT_TOOLING.md` has the full account.
 
+## Shipping a single file
+
+`arena.exe` is meant to be the only thing a Windows player needs, which takes
+three separate pieces and all three are easy to undo by accident:
+
+- **Maps are compiled in.** `cmake/embed_maps.cmake` turns `maps/*.txt` into a
+  byte array at build time. It is a byte array and not a raw string literal
+  because MSVC caps a single string literal at 65535 bytes and de_dust2 is ten
+  times that - the obvious `R"(...)"` form builds on GCC and fails on MSVC.
+  `map_load()` reads disk first and falls back to the baked copy, so an edited
+  map still wins during development. `test_embedded_maps.cpp` compares the
+  baked bytes against the files, because an embedded map that has *drifted*
+  from the file is worse than a missing one: it loads and plays differently.
+- **SDL is static.** `SDL_SHARED OFF` / `SDL_STATIC ON` before
+  `FetchContent_MakeAvailable`, then link `SDL3::SDL3-static` - the static
+  build exports a different target name, and linking `SDL3::SDL3` silently
+  picks the DLL.
+- **The MinGW runtime is static**, via plain `-static`. The narrower
+  `-static-libgcc -static-libstdc++ -Wl,-Bstatic,-lwinpthread,-Bdynamic` pair
+  that was there before left `libwinpthread-1.dll` as a real import, because
+  libstdc++ pulls it in after `-Bdynamic` switches back.
+
+Check the result rather than assuming it:
+
+```sh
+x86_64-w64-mingw32-objdump -p build-win/arena.exe | grep -i "DLL Name"
+```
+
+Everything listed should be a DLL that ships with Windows. Anything else is a
+file the player now has to be given.
+
 ## Bots
 
 `src/ai/agent.h` turns a `GameState` into a `PlayerInput` and nothing else - no

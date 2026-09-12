@@ -5,14 +5,33 @@
 #include <cstdio>
 #include <cstdlib>
 
+// setenv/unsetenv are POSIX and absent on MinGW, so the Windows test binary
+// would not compile at all without these. The config path is chosen by an
+// environment variable, so the tests genuinely need to set one.
+static void test_setenv(const char* key, const char* value) {
+#ifdef _WIN32
+  _putenv_s(key, value);
+#else
+  setenv(key, value, 1);
+#endif
+}
+
+static void test_unsetenv(const char* key) {
+#ifdef _WIN32
+  _putenv_s(key, "");
+#else
+  unsetenv(key);
+#endif
+}
+
 static void set_config_env(const char* path) {
 #ifdef _WIN32
   _putenv_s("ARENA_CONFIG", path ? path : "");
 #else
   if (path) {
-    setenv("ARENA_CONFIG", path, 1);
+    test_setenv("ARENA_CONFIG", path);
   } else {
-    unsetenv("ARENA_CONFIG");
+    test_unsetenv("ARENA_CONFIG");
   }
 #endif
 }
@@ -96,7 +115,7 @@ TEST(max_fps_clamp) {
 
 TEST(config_round_trips_max_fps_and_vsync) {
   const char* path = "/tmp/arena_test_fps.cfg";
-  setenv("ARENA_CONFIG", path, 1);
+  test_setenv("ARENA_CONFIG", path);
   std::remove(path);
 
   ClientSettings out{};
@@ -121,5 +140,5 @@ TEST(config_round_trips_max_fps_and_vsync) {
   CHECK(!in2.vsync);
 
   std::remove(path);
-  unsetenv("ARENA_CONFIG");
+  test_unsetenv("ARENA_CONFIG");
 }

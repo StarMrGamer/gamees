@@ -17,6 +17,26 @@ This environment currently has SDL3, `g++`, and Ninja installed. If `cmake` is
 not on `PATH`, install it or place the contract-approved CMake release at
 `tools/cmake/bin/cmake`.
 
+### Windows
+
+```sh
+cmake -B build-win -DCMAKE_TOOLCHAIN_FILE=cmake/mingw-w64.cmake -DCMAKE_BUILD_TYPE=Release
+cmake --build build-win
+```
+
+**`build-win/arena.exe` is the only file needed to run the game.** No SDL3.dll,
+no `maps/` directory, no MinGW runtime beside it. SDL is linked statically, the
+MinGW runtime with `-static`, and every map under `maps/` is compiled into the
+binary at build time. Verified with `objdump -p`: the only DLLs it imports are
+ones that ship with Windows.
+
+That costs size - the executable is about 19 MB - and it is the whole point:
+one file to copy, nothing to install.
+
+Maps on disk still win over the baked copies, so editing `maps/arena.txt` next
+to the binary takes effect without a rebuild. The one file the game writes is
+`arena.cfg`, created on demand when settings change.
+
 ## Run
 
 ```sh
