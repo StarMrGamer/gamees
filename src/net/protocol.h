@@ -5,7 +5,9 @@
 #include <cstdint>
 
 constexpr uint32_t PROTOCOL_MAGIC = 0x414E5241u;
-constexpr uint8_t PROTOCOL_VERSION = 6;
+// 7: added the sniper class and weapon. The wire format is unchanged, but a
+// v6 peer would read class 4 as out of range and silently fall back to Ranger.
+constexpr uint8_t PROTOCOL_VERSION = 7;
 constexpr int MAX_PACKET = 4096;
 constexpr uint16_t DEFAULT_PORT = 27950;
 

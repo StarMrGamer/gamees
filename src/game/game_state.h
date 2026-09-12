@@ -26,13 +26,15 @@ enum Weapon : uint8_t {
   WEAPON_ROCKET = 1,
   WEAPON_SHOTGUN = 2,
   WEAPON_LMG = 3,
+  WEAPON_SNIPER = 4,
 };
 
 enum PlayerClass : uint8_t {
   CLASS_RANGER = 0,
   CLASS_SCOUT = 1,
   CLASS_TANK = 2,
-  PLAYER_CLASS_COUNT = 3,
+  CLASS_SNIPER = 3,
+  PLAYER_CLASS_COUNT = 4,
 };
 
 enum EventType : uint8_t {
@@ -57,6 +59,7 @@ enum SoundId : uint8_t {
   SND_LAND,
   SND_SHOTGUN,
   SND_LMG,
+  SND_SNIPER,
   SND_COUNT,
 };
 
@@ -94,6 +97,7 @@ inline uint8_t player_class_primary_weapon(uint8_t player_class) {
   switch (player_class) {
     case CLASS_SCOUT: return WEAPON_SHOTGUN;
     case CLASS_TANK: return WEAPON_LMG;
+    case CLASS_SNIPER: return WEAPON_SNIPER;
     default: return WEAPON_RIFLE;
   }
 }
@@ -102,6 +106,7 @@ inline float player_class_max_health(uint8_t player_class) {
   switch (player_class) {
     case CLASS_SCOUT: return 85.0f;
     case CLASS_TANK: return 125.0f;
+    case CLASS_SNIPER: return 80.0f;  // the most fragile class, by design
     default: return PLAYER_MAX_HEALTH;
   }
 }
@@ -110,6 +115,7 @@ inline float player_class_speed_scale(uint8_t player_class) {
   switch (player_class) {
     case CLASS_SCOUT: return 1.12f;
     case CLASS_TANK: return 0.88f;
+    case CLASS_SNIPER: return 0.92f;
     default: return 1.0f;
   }
 }
@@ -118,6 +124,7 @@ inline float player_class_dash_impulse_scale(uint8_t player_class) {
   switch (player_class) {
     case CLASS_SCOUT: return 1.10f;
     case CLASS_TANK: return 0.90f;
+    case CLASS_SNIPER: return 1.00f;
     default: return 1.0f;
   }
 }
@@ -126,6 +133,7 @@ inline float player_class_dash_cooldown_scale(uint8_t player_class) {
   switch (player_class) {
     case CLASS_SCOUT: return 0.80f;
     case CLASS_TANK: return 1.20f;
+    case CLASS_SNIPER: return 1.15f;
     default: return 1.0f;
   }
 }
@@ -134,6 +142,7 @@ inline float player_class_damage_scale(uint8_t player_class) {
   switch (player_class) {
     case CLASS_SCOUT: return 0.94f;
     case CLASS_TANK: return 1.04f;
+    case CLASS_SNIPER: return 1.00f;
     default: return 1.0f;
   }
 }
@@ -142,6 +151,7 @@ inline float player_class_damage_taken_scale(uint8_t player_class) {
   switch (player_class) {
     case CLASS_SCOUT: return 1.05f;
     case CLASS_TANK: return 0.92f;
+    case CLASS_SNIPER: return 1.08f;  // punished hardest for being caught close
     default: return 1.0f;
   }
 }

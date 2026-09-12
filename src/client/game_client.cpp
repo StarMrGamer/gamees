@@ -131,6 +131,7 @@ static const char* weapon_name(uint8_t weapon) {
     case WEAPON_ROCKET: return "ROCKET";
     case WEAPON_SHOTGUN: return "SHOTGUN";
     case WEAPON_LMG: return "LMG";
+    case WEAPON_SNIPER: return "SNIPER";
     default: return "RIFLE";
   }
 }
@@ -139,6 +140,7 @@ static Vec3 player_class_tint(uint8_t player_class) {
   switch (player_class) {
     case CLASS_SCOUT: return {0.72f, 1.10f, 1.18f};
     case CLASS_TANK: return {1.18f, 0.90f, 0.72f};
+    case CLASS_SNIPER: return {0.88f, 1.14f, 0.82f};
     default: return {1.0f, 1.0f, 1.0f};
   }
 }
@@ -273,6 +275,9 @@ static TracerStyle tracer_style(uint8_t sound) {
   switch (sound) {
     case SND_SHOTGUN: return {200.0f, 3, 0.034f};
     case SND_LMG: return {330.0f, 4, 0.030f};
+    // The sniper's round is the fastest and the longest streak on the map: at
+    // this range it is often the only evidence of where the shot came from.
+    case SND_SNIPER: return {900.0f, 9, 0.050f};
     default: return {420.0f, 6, 0.042f};  // rifle
   }
 }
@@ -310,7 +315,9 @@ static void spawn_weapon_fx(ParticleSystem& particles, Rng& rng, const GameState
   particles_muzzle_flash(particles, rng, muzzle, aim);
   if (sound == SND_ROCKET_LAUNCH) return;  // projectile has its own smoke trail
 
-  float range = sound == SND_LMG ? LMG_RANGE : (sound == SND_SHOTGUN ? SHOTGUN_RANGE : RIFLE_RANGE);
+  float range = sound == SND_LMG ? LMG_RANGE :
+                (sound == SND_SHOTGUN ? SHOTGUN_RANGE :
+                 (sound == SND_SNIPER ? SNIPER_RANGE : RIFLE_RANGE));
   Vec3 base = weapon_converged_dir(view, map, shooter, eye, aim, muzzle, range);
   Vec3 color = weapon_tracer_color(sound);
   TracerStyle style = tracer_style(sound);
@@ -615,6 +622,7 @@ static void draw_enemy_health_bars(Hud& hud, const Renderer& renderer, const Gam
 }
 
 static PlayerInput sample_input(uint8_t weapon_switch, uint8_t class_switch, const ClientSettings& settings,
+                                float sensitivity_scale,
                                 float* yaw, float* pitch, float dt,
                                 float mouse_dx, float mouse_dy, float wheel_y) {
   const bool* keys = SDL_GetKeyboardState(nullptr);
@@ -641,7 +649,7 @@ static PlayerInput sample_input(uint8_t weapon_switch, uint8_t class_switch, con
   if (keys[SDL_SCANCODE_RIGHT]) *yaw += 2.6f * dt;
   if (keys[SDL_SCANCODE_UP]) *pitch += 1.8f * dt;
   if (keys[SDL_SCANCODE_DOWN]) *pitch -= 1.8f * dt;
-  float mouse_scale = mouse_radians_per_count(settings.sensitivity);
+  float mouse_scale = mouse_radians_per_count(settings.sensitivity) * sensitivity_scale;
   *yaw += mouse_dx * mouse_scale;
   *pitch -= mouse_dy * mouse_scale;
   *pitch = clampf(*pitch, -1.35f, 1.35f);
@@ -909,6 +917,10 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
             selected_class = 3;
             selected_weapon = 1;
           }
+          if (ev.key.key == SDLK_6) {
+            selected_class = 4;
+            selected_weapon = 1;
+          }
         }
       }
     }
@@ -923,7 +935,9 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
       in.yaw = yaw;
       in.pitch = pitch;
     } else {
-      in = sample_input(selected_weapon, selected_class, settings, &yaw, &pitch, dt, mouse_dx, mouse_dy, wheel_y);
+      in = sample_input(selected_weapon, selected_class, settings,
+                        gunfeel_sensitivity_scale(gun), &yaw, &pitch, dt, mouse_dx, mouse_dy,
+                        wheel_y);
     }
     client_send_input(client, in);
 
@@ -938,6 +952,8 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     if (have_local) {
       const Player& me = view.players[client.player_index];
       gunfeel_update(gun, dt, yaw, pitch, me.vel, me.on_ground);
+      bool want_scope = !settings_open && (SDL_GetMouseState(nullptr, nullptr) & SDL_BUTTON_RMASK);
+      gunfeel_update_zoom(gun, want_scope, me.weapon == WEAPON_SNIPER && me.alive, dt);
       bool want_fire = !settings_open && (in.buttons & BTN_FIRE) != 0;
       if (gunfeel_try_fire(gun, me.weapon, want_fire, me.alive)) {
         uint8_t sound = gunfeel_weapon_sound(me.weapon);
@@ -946,6 +962,7 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
       }
     } else {
       gunfeel_update(gun, dt, yaw, pitch, {0.0f, 0.0f, 0.0f}, true);
+      gunfeel_update_zoom(gun, false, false, dt);
     }
 
     if (copy_notice > 0.0f) copy_notice -= dt;
@@ -1026,7 +1043,7 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     int w = 1280;
     int h = 720;
     SDL_GetWindowSizeInPixels(window, &w, &h);
-    renderer_begin_frame(renderer, cam, w, h, map);
+    renderer_begin_frame(renderer, cam, w, h, map, gunfeel_fov_degrees(gun, 70.0f));
     renderer_draw_world(renderer);
     // Every transient box — players, rockets, pickups and all particles — goes
     // into one pre-transformed batch and is drawn in a single call.
@@ -1067,7 +1084,7 @@ int game_client_main(NetAddress server, const char* player_name, ServerThread* o
     }
     particles_render(particles, renderer, cam);
     renderer_flush_boxes(renderer);
-    if (have_local && view.players[client.player_index].alive) {
+    if (have_local && view.players[client.player_index].alive && gun.zoom < 0.9f) {
       ViewModel vm{};
       vm.offset = {0.115f, -0.095f, -0.26f};
       vm.kick = gun.kick;

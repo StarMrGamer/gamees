@@ -81,7 +81,7 @@ static void print_usage() {
       "Options:\n"
       "  --map FILE                     map to use (default maps/arena.txt)\n"
       "  --port N, --fraglimit N        server settings\n"
-      "  --name NAME, --class C         client identity (ranger|scout|tank)\n"
+      "  --name NAME, --class C         client identity (ranger|scout|tank|sniper)\n"
       "  --sensitivity F                mouse sensitivity, 0.1 to 20.0\n"
       "  --jump BIND, --doublejump BIND space|mwheelup|mwheeldown (doublejump also lalt)\n"
       "  --maxfps N                     frame cap; 0 or 'unlimited' for none (default)\n"
@@ -129,6 +129,10 @@ static bool parse_player_class_arg(const char* s, uint8_t* out) {
   }
   if (std::strcmp(s, "tank") == 0 || std::strcmp(s, "TANK") == 0) {
     *out = CLASS_TANK;
+    return true;
+  }
+  if (std::strcmp(s, "sniper") == 0 || std::strcmp(s, "SNIPER") == 0) {
+    *out = CLASS_SNIPER;
     return true;
   }
   return false;
@@ -316,7 +320,7 @@ int main(int argc, char** argv) {
       }
     } else if (std::strcmp(argv[i], "--class") == 0 && i + 1 < argc) {
       if (!parse_player_class_arg(argv[++i], &client_settings.player_class)) {
-        fatal_error("invalid --class, use ranger, scout, or tank");
+        fatal_error("invalid --class, use ranger, scout, tank or sniper");
       }
     } else if (std::strcmp(argv[i], "--jump") == 0 && i + 1 < argc) {
       if (!parse_jump_bind_arg(argv[++i], &client_settings.jump_bind)) {

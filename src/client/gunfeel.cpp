@@ -18,8 +18,14 @@ PunchSpec punch_for(uint8_t weapon) {
   switch (weapon) {
     case WEAPON_SHOTGUN: return {0.052f, 0.012f};
     case WEAPON_ROCKET: return {0.060f, 0.008f};
-    case WEAPON_LMG: return {0.012f, 0.007f};
-    default: return {0.026f, 0.006f};  // rifle
+    case WEAPON_SNIPER: return {0.085f, 0.004f};  // heaviest kick, almost no sway
+    // The rifle and the LMG kick nothing. They are the sustained-fire weapons,
+    // and a view that moves on every shot fights the player's own tracking
+    // instead of rewarding it. They still get the viewmodel recoil and the
+    // muzzle flash, so the shot is just as visible - it simply does not shove
+    // the camera.
+    case WEAPON_LMG: return {0.0f, 0.0f};
+    default: return {0.0f, 0.0f};  // rifle
   }
 }
 
@@ -60,6 +66,7 @@ float gunfeel_weapon_interval(uint8_t weapon) {
     case WEAPON_ROCKET: return ROCKET_INTERVAL;
     case WEAPON_SHOTGUN: return SHOTGUN_INTERVAL;
     case WEAPON_LMG: return LMG_INTERVAL;
+    case WEAPON_SNIPER: return SNIPER_INTERVAL;
     default: return RIFLE_INTERVAL;
   }
 }
@@ -69,6 +76,7 @@ uint8_t gunfeel_weapon_sound(uint8_t weapon) {
     case WEAPON_ROCKET: return SND_ROCKET_LAUNCH;
     case WEAPON_SHOTGUN: return SND_SHOTGUN;
     case WEAPON_LMG: return SND_LMG;
+    case WEAPON_SNIPER: return SND_SNIPER;
     default: return SND_RIFLE;
   }
 }
@@ -124,6 +132,25 @@ bool gunfeel_try_fire(GunFeel& g, uint8_t weapon, bool want_fire, bool alive) {
   g.kick = 1.0f;
   ++g.shots_fired;
   return true;
+}
+
+void gunfeel_update_zoom(GunFeel& g, bool want_zoom, bool can_zoom, float dt) {
+  float target = (want_zoom && can_zoom) ? 1.0f : 0.0f;
+  float rate = SNIPER_ZOOM_TIME > 0.0f ? dt / SNIPER_ZOOM_TIME : 1.0f;
+  g.zoom = approach(g.zoom, target, 1.0f / (SNIPER_ZOOM_TIME > 0.0f ? SNIPER_ZOOM_TIME : 1.0f),
+                    dt);
+  g.zoom = clampf(g.zoom, 0.0f, 1.0f);
+  (void)rate;
+}
+
+float gunfeel_fov_degrees(const GunFeel& g, float base_fov) {
+  return lerp(base_fov, SNIPER_ZOOM_FOV, clampf(g.zoom, 0.0f, 1.0f));
+}
+
+float gunfeel_sensitivity_scale(const GunFeel& g) {
+  // Matching the sensitivity to the zoom keeps the same mouse travel covering
+  // the same distance on screen. Without it a scoped view is unusable.
+  return lerp(1.0f, SNIPER_ZOOM_SENSITIVITY, clampf(g.zoom, 0.0f, 1.0f));
 }
 
 void gunfeel_view_punch(const GunFeel& g, float* yaw_out, float* pitch_out) {

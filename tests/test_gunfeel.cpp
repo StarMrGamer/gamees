@@ -64,7 +64,8 @@ int local_shots(uint8_t weapon, int ticks) {
 // The local gun and the real one have to fire at the same rate. If they drift,
 // the player watches a weapon that is not the weapon they are shooting.
 TEST(gunfeel_fire_rate_matches_the_server) {
-  const uint8_t weapons[4] = {WEAPON_RIFLE, WEAPON_ROCKET, WEAPON_SHOTGUN, WEAPON_LMG};
+  const uint8_t weapons[5] = {WEAPON_RIFLE, WEAPON_ROCKET, WEAPON_SHOTGUN, WEAPON_LMG,
+                              WEAPON_SNIPER};
   for (uint8_t w : weapons) {
     int ticks = TICK_RATE * 5;
     int local = local_shots(w, ticks);
@@ -83,6 +84,7 @@ TEST(gunfeel_sound_matches_the_server) {
   CHECK_EQ_INT(gunfeel_weapon_sound(WEAPON_ROCKET), SND_ROCKET_LAUNCH);
   CHECK_EQ_INT(gunfeel_weapon_sound(WEAPON_SHOTGUN), SND_SHOTGUN);
   CHECK_EQ_INT(gunfeel_weapon_sound(WEAPON_LMG), SND_LMG);
+  CHECK_EQ_INT(gunfeel_weapon_sound(WEAPON_SNIPER), SND_SNIPER);
 }
 
 TEST(gunfeel_intervals_match_the_tuning) {
@@ -90,6 +92,7 @@ TEST(gunfeel_intervals_match_the_tuning) {
   CHECK_NEAR(gunfeel_weapon_interval(WEAPON_ROCKET), ROCKET_INTERVAL, 0.0001f);
   CHECK_NEAR(gunfeel_weapon_interval(WEAPON_SHOTGUN), SHOTGUN_INTERVAL, 0.0001f);
   CHECK_NEAR(gunfeel_weapon_interval(WEAPON_LMG), LMG_INTERVAL, 0.0001f);
+  CHECK_NEAR(gunfeel_weapon_interval(WEAPON_SNIPER), SNIPER_INTERVAL, 0.0001f);
 }
 
 // The shot has to land on the frame the button went down, not a tick later.
@@ -111,17 +114,38 @@ TEST(gunfeel_holds_fire_when_dead_or_unpressed) {
   CHECK_EQ_INT(static_cast<int>(g.shots_fired), 0);
 }
 
-// What matters about the punch is not how fast one shot decays but that a
-// sustained burst does not accumulate: if each kick outlives the next shot the
-// view climbs away and never comes back. Measured peaks are 2.6 degrees on the
-// rifle and 4.1 on the rocket, and every weapon settles to exactly zero.
-TEST(gunfeel_view_punch_stays_bounded_through_a_burst) {
-  const uint8_t weapons[4] = {WEAPON_RIFLE, WEAPON_ROCKET, WEAPON_SHOTGUN, WEAPON_LMG};
-  for (uint8_t w : weapons) {
+// The rifle and the LMG deliberately have no view punch. They are the
+// sustained-fire weapons, and a camera that moves on every shot fights the
+// player's own tracking rather than rewarding it. They still get viewmodel
+// recoil and a muzzle flash, so the shot is just as visible.
+TEST(sustained_fire_weapons_have_no_view_punch) {
+  const uint8_t quiet[2] = {WEAPON_RIFLE, WEAPON_LMG};
+  for (uint8_t w : quiet) {
+    GunFeel g;
+    gunfeel_reset(g);
+    for (int t = 0; t < TICK_RATE * 3; ++t) {
+      gunfeel_update(g, TICK_DT, 0.0f, 0.0f, {0, 0, 0}, true);
+      gunfeel_try_fire(g, w, true, true);
+      float yaw = 0.0f;
+      float pitch = 0.0f;
+      gunfeel_view_punch(g, &yaw, &pitch);
+      CHECK_NEAR(yaw, 0.0f, 0.00001f);
+      CHECK_NEAR(pitch, 0.0f, 0.00001f);
+    }
+    CHECK(g.shots_fired > 4);   // it really did fire, it just did not shove
+    CHECK(g.kick > 0.0f);       // and the viewmodel still recoiled
+  }
+}
+
+// The weapons that do kick must stay bounded through a burst: if each kick
+// outlives the next shot the view climbs away and never comes back.
+TEST(heavy_weapons_kick_but_stay_bounded) {
+  const uint8_t heavy[3] = {WEAPON_ROCKET, WEAPON_SHOTGUN, WEAPON_SNIPER};
+  for (uint8_t w : heavy) {
     GunFeel g;
     gunfeel_reset(g);
     float worst = 0.0f;
-    for (int t = 0; t < TICK_RATE * 4; ++t) {
+    for (int t = 0; t < TICK_RATE * 6; ++t) {
       gunfeel_update(g, TICK_DT, 0.0f, 0.0f, {0, 0, 0}, true);
       gunfeel_try_fire(g, w, true, true);
       float yaw = 0.0f;
@@ -130,11 +154,10 @@ TEST(gunfeel_view_punch_stays_bounded_through_a_burst) {
       float mag = std::sqrt(yaw * yaw + pitch * pitch);
       if (mag > worst) worst = mag;
     }
-    CHECK(g.shots_fired > 4);        // it really did fire a burst
-    CHECK(worst > 0.005f);           // and it really did kick
-    CHECK(worst < 0.14f);            // ~8 degrees; beyond that it is climbing
+    CHECK(g.shots_fired > 2);
+    CHECK(worst > 0.005f);   // it really did kick
+    CHECK(worst < 0.20f);    // ~11 degrees; beyond that it is climbing
 
-    // Release, and it must come all the way back rather than parking off-centre.
     for (int t = 0; t < TICK_RATE; ++t) {
       gunfeel_update(g, TICK_DT, 0.0f, 0.0f, {0, 0, 0}, true);
     }
@@ -174,4 +197,46 @@ TEST(gunfeel_instances_are_independent) {
   // `a` has been whipping the view around and should have sway; `b` has not.
   CHECK(std::fabs(a.sway_yaw) > std::fabs(b.sway_yaw));
   CHECK_NEAR(b.sway_yaw, 0.0f, 0.0001f);
+}
+
+// The scope is a client-side view change and nothing more, so it must never
+// engage for a weapon that has no scope - otherwise pressing the button with a
+// rifle in hand narrows the world for no reason.
+TEST(scope_only_engages_for_the_sniper) {
+  GunFeel g;
+  gunfeel_reset(g);
+  for (int t = 0; t < 60; ++t) gunfeel_update_zoom(g, true, false, TICK_DT);
+  CHECK_NEAR(g.zoom, 0.0f, 0.0001f);
+  CHECK_NEAR(gunfeel_fov_degrees(g, 70.0f), 70.0f, 0.01f);
+  CHECK_NEAR(gunfeel_sensitivity_scale(g), 1.0f, 0.0001f);
+}
+
+TEST(scope_zooms_in_and_back_out) {
+  GunFeel g;
+  gunfeel_reset(g);
+  // In.
+  for (int t = 0; t < 60; ++t) gunfeel_update_zoom(g, true, true, TICK_DT);
+  CHECK_NEAR(g.zoom, 1.0f, 0.001f);
+  CHECK_NEAR(gunfeel_fov_degrees(g, 70.0f), SNIPER_ZOOM_FOV, 0.1f);
+  // Aim has to slow with the zoom or a scoped view is unusable.
+  CHECK(gunfeel_sensitivity_scale(g) < 0.5f);
+  CHECK_NEAR(gunfeel_sensitivity_scale(g), SNIPER_ZOOM_SENSITIVITY, 0.001f);
+
+  // Out, and all the way back - a scope that half-releases leaves the player
+  // permanently slightly zoomed with slightly wrong sensitivity.
+  for (int t = 0; t < 60; ++t) gunfeel_update_zoom(g, false, true, TICK_DT);
+  CHECK_NEAR(g.zoom, 0.0f, 0.0001f);
+  CHECK_NEAR(gunfeel_fov_degrees(g, 70.0f), 70.0f, 0.01f);
+  CHECK_NEAR(gunfeel_sensitivity_scale(g), 1.0f, 0.0001f);
+}
+
+// Losing the weapon mid-scope (death, a class switch) must drop the zoom
+// rather than stranding the player at 22 degrees with a rifle.
+TEST(scope_drops_when_the_weapon_goes_away) {
+  GunFeel g;
+  gunfeel_reset(g);
+  for (int t = 0; t < 60; ++t) gunfeel_update_zoom(g, true, true, TICK_DT);
+  CHECK(g.zoom > 0.9f);
+  for (int t = 0; t < 60; ++t) gunfeel_update_zoom(g, true, false, TICK_DT);
+  CHECK_NEAR(g.zoom, 0.0f, 0.0001f);
 }

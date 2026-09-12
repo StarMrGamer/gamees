@@ -269,3 +269,84 @@ TEST(class_switch_preserves_health_fraction_and_scales_damage) {
              player_class_max_health(CLASS_TANK) - 50.0f * player_class_damage_taken_scale(CLASS_TANK),
              0.001f);
 }
+
+// The sniper exists to punish being seen at range. Its numbers encode a
+// specific balance intent, so they are worth pinning: one shot removes a Scout
+// but leaves a Ranger alive, and the cadence is slow enough that a miss really
+// costs something.
+TEST(sniper_one_shots_a_scout_but_not_a_ranger) {
+  Map map = weapons_map();
+  GameState s{};
+  game_init(s, map, 99);
+  int shooter = game_player_join(s, map, "sniper");
+  int scout = game_player_join(s, map, "scout");
+  CHECK(shooter >= 0 && scout >= 0);
+
+  game_set_player_class(s.players[shooter], CLASS_SNIPER);
+  CHECK_EQ_INT(s.players[shooter].weapon, WEAPON_SNIPER);
+  CHECK_NEAR(s.players[shooter].health, 80.0f, 0.01f);
+
+  auto landed_on = [](uint8_t victim) {
+    return SNIPER_DAMAGE * player_class_damage_scale(CLASS_SNIPER) *
+           player_class_damage_taken_scale(victim);
+  };
+  // The margins matter more than the numbers: each of these must be a decision
+  // rather than a coin flip, so assert a real gap either way. An earlier
+  // SNIPER_DAMAGE of 80 left a Scout alive on exactly 1 hp.
+  game_set_player_class(s.players[scout], CLASS_SCOUT);
+  float scout_hp = player_class_max_health(CLASS_SCOUT);
+  CHECK(landed_on(CLASS_SCOUT) > scout_hp + 5.0f);            // dies outright
+  CHECK(landed_on(CLASS_SNIPER) > 80.0f + 5.0f);              // and so does a sniper
+
+  float ranger_hp = player_class_max_health(CLASS_RANGER);
+  CHECK(landed_on(CLASS_RANGER) < ranger_hp - 5.0f);          // lives, but only just
+  CHECK(landed_on(CLASS_RANGER) > ranger_hp * 0.7f);
+
+  float tank_hp = player_class_max_health(CLASS_TANK);
+  CHECK(landed_on(CLASS_TANK) < tank_hp - 20.0f);             // comfortably needs two
+  CHECK(landed_on(CLASS_TANK) * 2.0f > tank_hp);
+
+  // Sustained damage must stay mid-pack: the class is a burst, not a machine gun.
+  float sniper_dps = SNIPER_DAMAGE / SNIPER_INTERVAL;
+  float rifle_dps = RIFLE_DAMAGE / RIFLE_INTERVAL;
+  CHECK(sniper_dps < rifle_dps);
+}
+
+// It has to actually fire, at its own cadence, and reach further than anything
+// else on the map.
+TEST(sniper_fires_at_its_own_cadence_and_range) {
+  Map map = weapons_map();
+  GameState s{};
+  game_init(s, map, 99);
+  int a = game_player_join(s, map, "a");
+  int b = game_player_join(s, map, "b");
+  game_set_player_class(s.players[a], CLASS_SNIPER);
+
+  // Line them up well beyond rifle range, which the sniper alone can cover.
+  CHECK(SNIPER_RANGE > RIFLE_RANGE);
+  CHECK(SNIPER_INTERVAL > RIFLE_INTERVAL * 4.0f);
+
+  s.players[a].pos = {0.0f, 0.0f, 0.0f};
+  s.players[a].yaw = 0.0f;
+  s.players[a].pitch = 0.0f;
+  s.players[b].pos = {0.0f, 0.0f, -60.0f};
+  float before = s.players[b].health;
+  weapon_fire(s, map, a);
+  CHECK(s.players[b].health < before);
+  CHECK_NEAR(s.players[a].fire_cooldown, SNIPER_INTERVAL, 0.0001f);
+}
+
+// Every class must hand out a weapon, and every weapon must belong to a class
+// or be reachable by switching. A new class that forgets this arms the player
+// with a rifle and no explanation.
+TEST(every_class_has_a_primary_weapon) {
+  for (int c = 0; c < PLAYER_CLASS_COUNT; ++c) {
+    uint8_t w = player_class_primary_weapon(static_cast<uint8_t>(c));
+    CHECK(w <= WEAPON_SNIPER);
+    CHECK(player_class_max_health(static_cast<uint8_t>(c)) > 0.0f);
+    CHECK(player_class_speed_scale(static_cast<uint8_t>(c)) > 0.0f);
+  }
+  CHECK_EQ_INT(player_class_primary_weapon(CLASS_SNIPER), WEAPON_SNIPER);
+  // The four classes must not all share one weapon.
+  CHECK(player_class_primary_weapon(CLASS_SNIPER) != player_class_primary_weapon(CLASS_RANGER));
+}

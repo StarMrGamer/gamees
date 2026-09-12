@@ -158,7 +158,8 @@ void weapon_fire(GameState& s, const Map& map, int shooter, const PlayerPose* re
   Vec3 eye = player_eye_pos(p);
   Vec3 origin = weapon_muzzle_pos(p);
   float aim_range = p.weapon == WEAPON_SHOTGUN ? SHOTGUN_RANGE :
-                    (p.weapon == WEAPON_LMG ? LMG_RANGE : RIFLE_RANGE);
+                    (p.weapon == WEAPON_LMG ? LMG_RANGE :
+                     (p.weapon == WEAPON_SNIPER ? SNIPER_RANGE : RIFLE_RANGE));
   Vec3 shot_dir = weapon_converged_dir(s, map, shooter, eye, dir, origin, aim_range, rewind);
 
   if (p.weapon == WEAPON_ROCKET) {
@@ -184,6 +185,12 @@ void weapon_fire(GameState& s, const Map& map, int shooter, const PlayerPose* re
                    SHOTGUN_FALLOFF_START, SHOTGUN_FALLOFF_END, SHOTGUN_MIN_DAMAGE_FRAC, rewind);
     }
     push_event(s, EV_SOUND, SND_SHOTGUN, static_cast<uint8_t>(shooter), origin);
+  } else if (p.weapon == WEAPON_SNIPER) {
+    p.fire_cooldown = SNIPER_INTERVAL;
+    fire_hitscan(s, map, shooter, origin, shot_dir, SNIPER_RANGE,
+                 SNIPER_DAMAGE * player_class_damage_scale(p.player_class), SNIPER_KNOCKBACK,
+                 0.0f, 1.0f, 1.0f, rewind);
+    push_event(s, EV_SOUND, SND_SNIPER, static_cast<uint8_t>(shooter), origin);
   } else if (p.weapon == WEAPON_LMG) {
     p.fire_cooldown = LMG_INTERVAL;
     fire_hitscan(s, map, shooter, origin, shot_dir, LMG_RANGE,

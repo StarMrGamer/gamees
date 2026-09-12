@@ -131,11 +131,14 @@ bool renderer_init(Renderer& r, const Map& map) {
   return true;
 }
 
-void renderer_begin_frame(Renderer& r, const Camera& cam, int fb_w, int fb_h, const Map& map) {
+void renderer_begin_frame(Renderer& r, const Camera& cam, int fb_w, int fb_h, const Map& map,
+                          float fov_degrees) {
   r.camera = cam;
   float aspect = fb_h > 0 ? static_cast<float>(fb_w) / static_cast<float>(fb_h) : 1.0f;
   r.view = camera_view(cam);
-  r.proj = mat4_perspective(70.0f * PI / 180.0f, aspect, 0.05f, 500.0f);
+  if (fov_degrees < 5.0f) fov_degrees = 5.0f;
+  if (fov_degrees > 140.0f) fov_degrees = 140.0f;
+  r.proj = mat4_perspective(fov_degrees * PI / 180.0f, aspect, 0.05f, 500.0f);
   r.view_proj = mat4_mul(r.proj, r.view);
   // A narrower field of view for the weapon. At the world's 70 degrees a model
   // this close to the camera stretches badly toward the screen edge.
@@ -197,8 +200,9 @@ void renderer_draw_viewmodel(Renderer& r, const ViewModel& vm) {
   // with the hands, which is the part that was missing.
   Vec3 body_col = vm.color;
   Vec3 dark = vm.color * 0.62f;
-  float len = vm.weapon == WEAPON_ROCKET ? 0.46f : (vm.weapon == WEAPON_SHOTGUN ? 0.40f : 0.36f);
-  float bore = vm.weapon == WEAPON_ROCKET ? 0.072f : 0.032f;
+  float len = vm.weapon == WEAPON_ROCKET ? 0.46f :
+              (vm.weapon == WEAPON_SNIPER ? 0.62f : (vm.weapon == WEAPON_SHOTGUN ? 0.40f : 0.36f));
+  float bore = vm.weapon == WEAPON_ROCKET ? 0.072f : (vm.weapon == WEAPON_SNIPER ? 0.026f : 0.032f);
   r.box_batch.add_box_yaw(base + Vec3{0.0f, 0.0f, -0.06f}, {0.075f, 0.090f, 0.20f}, body_col, 0.0f);
   r.box_batch.add_box_yaw(base + Vec3{0.0f, 0.022f, -0.06f - len * 0.5f},
                           {bore, bore, len}, dark, 0.0f);

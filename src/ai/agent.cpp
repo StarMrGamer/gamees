@@ -33,6 +33,7 @@ float preferred_range(uint8_t weapon) {
     case WEAPON_SHOTGUN: return 5.0f;
     case WEAPON_LMG: return 13.0f;
     case WEAPON_ROCKET: return 16.0f;
+    case WEAPON_SNIPER: return 38.0f;  // wants the longest sightline it can find
     default: return 18.0f;
   }
 }
@@ -41,6 +42,7 @@ float weapon_reach(uint8_t weapon) {
   switch (weapon) {
     case WEAPON_SHOTGUN: return SHOTGUN_FALLOFF_END;
     case WEAPON_LMG: return LMG_RANGE;
+    case WEAPON_SNIPER: return SNIPER_RANGE;
     case WEAPON_ROCKET: return 45.0f;
     default: return RIFLE_RANGE;
   }
@@ -577,7 +579,8 @@ PlayerInput agent_think(const GameState& s, const Map& map, int self, AgentKind 
   if (engaging) {
     const Player& t = s.players[best];
     float dist = vec3_length(body_center(t) - eye);
-    if (dist > 8.0f && dist < 32.0f && t.on_ground && me.player_class != CLASS_SCOUT) {
+    if (dist > 8.0f && dist < 32.0f && t.on_ground && me.player_class != CLASS_SCOUT &&
+        me.player_class != CLASS_SNIPER) {
       want_weapon = 2;
     }
   }

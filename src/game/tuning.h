@@ -57,6 +57,27 @@ constexpr float SHOTGUN_SPREAD = 0.085f;
 constexpr float SHOTGUN_FALLOFF_START = 7.0f;
 constexpr float SHOTGUN_FALLOFF_END = 28.0f;
 constexpr float SHOTGUN_MIN_DAMAGE_FRAC = 0.30f;
+// The sniper trades everything for one decisive shot. Its sustained damage is
+// mid-pack - 62/s against the rifle's 75 and the shotgun's 86 up close - and
+// all of its power is in the burst, which is the right shape for the class.
+//
+// 90 is chosen for the margins it leaves rather than the number itself. After
+// each class's damage-taken scale a single hit does 94.5 to a Scout (85 hp) and
+// 97.2 to another Sniper (80 hp), killing both outright; 90 to a Ranger, who
+// lives on 10; and 82.8 to a Tank, who lives on 42. An earlier 80 left the
+// Scout alive on exactly 1 hp, which is a coin-flip rather than a decision -
+// any later tweak to a scale would have silently flipped it.
+constexpr float SNIPER_DAMAGE = 90.0f;
+constexpr float SNIPER_INTERVAL = 1.45f;
+constexpr float SNIPER_KNOCKBACK = 1.6f;
+constexpr float SNIPER_RANGE = 300.0f;
+// Zoom is purely a client-side view change - the simulation never sees it - so
+// it costs nothing on the wire and cannot desync.
+constexpr float SNIPER_ZOOM_FOV = 22.0f;
+constexpr float SNIPER_ZOOM_TIME = 0.12f;
+// Aim scales with the zoom so the same mouse travel covers the same distance on
+// screen; without this a scoped sniper is unusable.
+constexpr float SNIPER_ZOOM_SENSITIVITY = 0.34f;
 constexpr float LMG_DAMAGE = 2.5f;
 constexpr float LMG_INTERVAL = 0.055f;
 constexpr float LMG_KNOCKBACK = 0.12f;

@@ -68,6 +68,23 @@ join commands in the terminal. Other players can join with `--connect IP:27950`
 or by choosing Join by IP from the startup menu. Internet play still requires
 the host's router/firewall to allow UDP on the chosen port.
 
+**Sniper** is the fourth class. It carries the only weapon that reaches across a
+whole map, and right mouse scopes it - a client-side view change the simulation
+never sees, so it costs nothing on the wire, with the aim sensitivity scaled to
+match so the same mouse travel covers the same distance on screen.
+
+One hit kills a Scout or another Sniper outright, leaves a Ranger on 10 health
+and a Tank on 42. In exchange it is the most fragile class in the game (80
+health, and it takes 8% extra damage), it fires once every 1.45 s, and its
+sustained damage is *below* the rifle's - 62/s against 75. All of its power is
+in the burst, so a miss costs more than any other weapon's.
+
+The rifle and the LMG have **no view punch**. They are the sustained-fire
+weapons, and a camera that moves on every shot fights your tracking instead of
+rewarding it; they still get viewmodel recoil and a muzzle flash, so the shot is
+just as visible. The shotgun, rocket and sniper do kick, hardest of all on the
+sniper.
+
 Firing is predicted locally: the muzzle flash, tracer, report and view punch
 all happen on the frame the button goes down, rather than when the server's
 snapshot comes back. The server stays authoritative for damage - this only
@@ -75,8 +92,9 @@ decides when you see and hear your own gun. View punch is applied to the camera
 only, so recoil never moves where your bullets go.
 
 Controls in the SDL client are WASD movement, Space jump by default, Left Shift
-dash, Ctrl/C crouch, F fire, arrow keys look, 1 class primary, 2 rocket, 3/4/5
-class switch (Ranger/Scout/Tank), and Escape for the settings menu.
+dash, Ctrl/C crouch, F fire, arrow keys look, 1 class primary, 2 rocket, 3/4/5/6
+class switch (Ranger/Scout/Tank/Sniper), right mouse to scope with a sniper, and
+Escape for the settings menu.
 
 Bullets leave a tracer that actually flies - a short streak launched from the
 muzzle at 200-420 m/s depending on the weapon, terminating in a dust puff timed
@@ -198,4 +216,4 @@ land where the shooter saw them instead of needing to lead targets. Rocket
 projectiles are not rewound. Set `LAG_COMP_MAX_REWIND` in `src/game/tuning.h`
 to bound the rewind window (default 60 ticks).
 
-Protocol version 6 — older builds cannot interoperate.
+Protocol version 7 — older builds cannot interoperate.

@@ -223,6 +223,34 @@ Two things learned the hard way while tuning the steering, both measured:
   probe is a tenth of a second of warning at 12 m/s. Scaling it took falls out
   of the world from 16 per 30 matches to 0.
 
+## Adding a class or a weapon
+
+Both are enumerations the whole codebase switches on, so a new one has to be
+threaded through every site or it half-exists. The sniper touched: `tuning.h`
+(its constants), `game_state.h` (the enum, the sound, and all six
+`player_class_*` scales), `weapons.cpp` (the fire branch and the aim range),
+`gunfeel.cpp` (interval, sound, punch), `synth.cpp` (the report),
+`game_client.cpp` (name, tint, the number key, tracer style), `renderer.cpp`
+(viewmodel proportions), `agent.cpp` (preferred range and reach, and an
+exclusion from the rocket swap), and `main.cpp` (the `--class` parser and its
+help text).
+
+**Bump `PROTOCOL_VERSION`.** The wire format did not change, but a v6 peer
+reads class 4 as out of range and silently falls back to Ranger - which looks
+like a bug in the game rather than a version mismatch.
+
+**`--simulate` state hashes change**, and that is correct rather than a
+regression: `headless.cpp` cycles synthetic players through
+`PLAYER_CLASS_COUNT`, so a fourth class changes who is what. de_dust2 seed 1
+with 8 players went 2750473076 -> 2348113357 when the sniper landed.
+
+Balance numbers want margins, not just values. `SNIPER_DAMAGE` was 80 before
+anyone checked the arithmetic: after the Scout's 1.05 damage-taken scale that
+is 84 against 85 health, leaving it alive on *exactly one hit point*. That is a
+coin flip, not a design, and any later tweak to any scale would have silently
+flipped it. 90 gives every outcome a real gap, and the test asserts the gaps
+rather than the numbers.
+
 ## Weapon feel
 
 `src/client/gunfeel.h` owns everything about firing that must not wait for the

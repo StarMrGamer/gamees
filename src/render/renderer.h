@@ -37,7 +37,9 @@ struct Renderer {
 };
 
 bool renderer_init(Renderer& r, const Map& map);
-void renderer_begin_frame(Renderer& r, const Camera& cam, int fb_w, int fb_h, const Map& map);
+// `fov_degrees` is the vertical field of view; the sniper scope narrows it.
+void renderer_begin_frame(Renderer& r, const Camera& cam, int fb_w, int fb_h, const Map& map,
+                          float fov_degrees = 70.0f);
 void renderer_draw_world(Renderer& r);
 // Queue a world-space box into the dynamic batch; flush draws them all at once.
 void renderer_begin_boxes(Renderer& r);

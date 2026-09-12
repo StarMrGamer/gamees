@@ -29,6 +29,7 @@ struct GunFeel {
   float last_yaw, last_pitch;  // previous frame's aim, for the sway
   bool aim_seen;
   uint32_t shots_fired;   // local count, for debugging and tests
+  float zoom;             // 0 = hip, 1 = fully scoped
 };
 
 void gunfeel_reset(GunFeel& g);
@@ -46,6 +47,14 @@ void gunfeel_update(GunFeel& g, float dt, float aim_yaw, float aim_pitch, Vec3 v
 // caller should play the muzzle flash, tracer and sound. Mirrors the server's
 // rule: alive, holding fire, and off cooldown.
 bool gunfeel_try_fire(GunFeel& g, uint8_t weapon, bool want_fire, bool alive);
+
+// Advances the scope toward `want_zoom` (0 or 1). Zoom is a client-only view
+// change: the simulation never sees it, so it costs nothing on the wire and
+// cannot desync.
+void gunfeel_update_zoom(GunFeel& g, bool want_zoom, bool can_zoom, float dt);
+// Vertical field of view in degrees, and the matching aim sensitivity scale.
+float gunfeel_fov_degrees(const GunFeel& g, float base_fov);
+float gunfeel_sensitivity_scale(const GunFeel& g);
 
 // View punch to add to the camera angles. Not added to the input.
 void gunfeel_view_punch(const GunFeel& g, float* yaw_out, float* pitch_out);

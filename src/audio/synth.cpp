@@ -123,6 +123,16 @@ Sound synth_make(int sound_id) {
         float snap = noise(rng) * std::pow(1.0f - u, 8.0f);
         return crack * 0.4f + snap * 0.6f;
       });
+    case SND_SNIPER:
+      // A long, hard crack with a tail: the report has to carry across a map
+      // and tell everyone on it exactly where the shot came from.
+      return render(0.55f, 1.0f, [](float t, float u, uint32_t& rng) {
+        float crack = square(320.0f + 1500.0f * std::pow(1.0f - u, 3.0f), t) *
+                      std::pow(1.0f - u, 6.0f);
+        float boom = sine(70.0f - 26.0f * u, t) * std::pow(1.0f - u, 1.2f);
+        float tail = noise(rng) * std::pow(1.0f - u, 1.8f) * 0.35f;
+        return crack * 0.55f + boom * 0.6f + tail;
+      });
     default:
       return render(0.10f, 0.30f, [](float t, float u, uint32_t&) {
         return sine(220.0f, t) * env_decay(u);
