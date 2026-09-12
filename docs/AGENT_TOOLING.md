@@ -149,6 +149,12 @@ worth, measured on de_dust2 at a fixed time limit:
 
 Without it the bot never reaches the frag limit at any ceiling tried.
 
+`--eval` also reports each side's average and top speed and how much of the
+time it spent airborne. `GROUND_MAX_SPEED` is 8 m/s, so a sustained average
+above that is the bot genuinely using dashes and slide-jumps rather than
+walking - and it is the number that caught a bunny-hop heuristic which left the
+bot airborne 90.6% of the time at 7.7 m/s, slower than not hopping at all.
+
 ## `--check-map` - map validation
 
 ```sh

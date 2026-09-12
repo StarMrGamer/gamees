@@ -288,6 +288,10 @@ bool headless_eval(const char* map_path, int a_kind, int b_kind, const EvalOptio
 
     int frags[2] = {0, 0};
     int deaths[2] = {0, 0};
+    double speed_sum[2] = {0.0, 0.0};
+    long long speed_samples[2] = {0, 0};
+    float top_speed[2] = {0.0f, 0.0f};
+    int airborne[2] = {0, 0};
     int shots[2] = {0, 0};
     int void_falls[2] = {0, 0};
     float prev_health[MAX_PLAYERS];
@@ -335,6 +339,14 @@ bool headless_eval(const char* map_path, int a_kind, int b_kind, const EvalOptio
         // much into the column.
         if (p.health < prev_health[i] && p.alive) damage[1 - side_of(i)] += prev_health[i] - p.health;
         prev_health[i] = p.health;
+
+        if (p.alive) {
+          float sp = std::sqrt(p.vel.x * p.vel.x + p.vel.z * p.vel.z);
+          speed_sum[side_of(i)] += sp;
+          ++speed_samples[side_of(i)];
+          if (sp > top_speed[side_of(i)]) top_speed[side_of(i)] = sp;
+          if (!p.on_ground) ++airborne[side_of(i)];
+        }
       }
 
       // Team score is the sum of its members' frags.
@@ -358,6 +370,10 @@ bool headless_eval(const char* map_path, int a_kind, int b_kind, const EvalOptio
       st.shots += shots[side];
       st.void_falls += void_falls[side];
       st.damage_dealt += damage[side];
+      st.speed_sum += speed_sum[side];
+      st.speed_samples += speed_samples[side];
+      st.airborne_ticks += airborne[side];
+      if (top_speed[side] > st.top_speed) st.top_speed = top_speed[side];
     }
     // A match that runs out of clock is not a draw - it goes to whoever was
     // ahead, as it would in any real ruleset. Scoring timeouts as draws
@@ -386,11 +402,14 @@ std::string eval_report_json(const EvalReport& r) {
                 "\"frags\":%d,\"deaths\":%d,\"shots\":%d,\"void_falls\":%d,\"damage\":%.0f},"
                 "\"b\":{\"name\":\"%s\",\"wins\":%d,\"frags\":%d,\"deaths\":%d,\"shots\":%d,"
                 "\"void_falls\":%d,\"damage\":%.0f},"
+                "\"a_speed\":%.2f,\"a_top_speed\":%.1f,\"b_speed\":%.2f,\"b_top_speed\":%.1f,"
                 "\"nav_built\":%s,\"nav_nodes\":%d,"
                 "\"avg_match_seconds\":%.1f,\"ticks_per_second\":%.0f,\"nan\":%s}",
                 r.matches, r.draws, r.a_name, r.a.wins, r.a.frags, r.a.deaths, r.a.shots,
                 r.a.void_falls, r.a.damage_dealt, r.b_name, r.b.wins, r.b.frags, r.b.deaths,
                 r.b.shots, r.b.void_falls, r.b.damage_dealt,
+                r.a.speed_samples ? r.a.speed_sum / r.a.speed_samples : 0.0, r.a.top_speed,
+                r.b.speed_samples ? r.b.speed_sum / r.b.speed_samples : 0.0, r.b.top_speed,
                 r.nav_built ? "true" : "false", r.nav_nodes,
                 r.avg_match_seconds, r.ticks_per_second,
                 r.nan_seen ? "true" : "false");
@@ -405,11 +424,19 @@ std::string eval_report_text(const EvalReport& r) {
                 "%d matches: %s %d - %d %s (%d draws)\n"
                 "  %-7s win %5.1f%%  frags %5d  deaths %5d  damage %8.0f  shots %6d  fell out %d\n"
                 "  %-7s win %5.1f%%  frags %5d  deaths %5d  damage %8.0f  shots %6d  fell out %d\n"
+                "  %-7s speed avg %4.1f m/s  top %5.1f m/s  airborne %4.1f%%\n"
+                "  %-7s speed avg %4.1f m/s  top %5.1f m/s  airborne %4.1f%%\n"
                 "  navmesh %s (%d nodes)\n"
                 "  average match %.1f s, %.0f sim ticks/s (%.0fx realtime)",
                 r.matches, r.a_name, r.a.wins, r.b.wins, r.b_name, r.draws,
                 r.a_name, win_a, r.a.frags, r.a.deaths, r.a.damage_dealt, r.a.shots, r.a.void_falls,
                 r.b_name, 100.0 - win_a, r.b.frags, r.b.deaths, r.b.damage_dealt, r.b.shots, r.b.void_falls,
+                r.a_name, r.a.speed_samples ? r.a.speed_sum / r.a.speed_samples : 0.0,
+                r.a.top_speed,
+                r.a.speed_samples ? 100.0 * r.a.airborne_ticks / r.a.speed_samples : 0.0,
+                r.b_name, r.b.speed_samples ? r.b.speed_sum / r.b.speed_samples : 0.0,
+                r.b.top_speed,
+                r.b.speed_samples ? 100.0 * r.b.airborne_ticks / r.b.speed_samples : 0.0,
                 r.nav_built ? "built" : "UNAVAILABLE - bots steer straight", r.nav_nodes,
                 r.avg_match_seconds, r.ticks_per_second, r.ticks_per_second / TICK_RATE);
   return buf;

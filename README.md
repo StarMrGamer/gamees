@@ -31,8 +31,10 @@ not on `PATH`, install it or place the contract-approved CMake release at
 
 The bot plays properly: it picks targets it can actually see, leads rockets,
 circles while it shoots, closes to shotgun range or holds rifle range depending
-on its class, bunny hops, goes for health when hurt, and does not walk off the
-map. It beats the old spin-and-spray bot 40 matches to 0.
+on its class, chains dashes into slide-jumps to move at 13 m/s against a 8 m/s
+walk, wall jumps, goes for health when hurt, paths around geometry rather than
+into it, and does not walk off the map. It beats the old spin-and-spray bot 40
+matches to 0.
 
 Maps are looked up relative to the current working directory and, failing
 that, relative to the executable (and up to three parent directories), so the

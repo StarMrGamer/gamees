@@ -103,6 +103,41 @@ line-of-sight raycast. The split is deliberate and worth preserving. Without the
 navigation half, two bots on de_dust2 never meet and 30 of 30 matches time out;
 without the aiming half, it is a wallhack and useless as a training opponent.
 
+### Movement tech, and the one that does not work
+
+The bot uses dashes, slides, slide-jumps, wall jumps and double jumps. These
+are *impulses* (+12, +2, +3 m/s) and they are what makes it fast: average speed
+on arena went 7.7 -> 13.2 m/s, and de_dust2 matches reach the frag limit in
+396 s instead of 514.
+
+Jump timing matters: jump, dash and air jump are **edge-triggered** in
+movement.cpp (`jump_down && !p.jump_held`). Holding the bit does nothing after
+the first tick, so the bot has to release for a tick between presses.
+
+**Air strafing is deliberately absent, and that is measured, not an omission.**
+This engine caps air acceleration on the wish direction's *projection* onto
+velocity (`AIR_WISH_CAP`, 1 m/s), so the only gain available is perpendicular -
+it curves you rather than speeding you along. Over 20 s on flat ground:
+
+| strategy                | avg speed | net travel |
+|-------------------------|----------:|-----------:|
+| walk forward            | 8.00 m/s  | **159.9 m** |
+| hop, forward held       | 8.00 m/s  | 159.9 m |
+| wish perpendicular      | 11.12 m/s | 42.4 m (a circle) |
+| half-beat, 20deg swing  | 5.65 m/s  | 99.3 m |
+| half-beat, 45deg swing  | 2.28 m/s  | 4.1 m |
+
+There is no compounding here the way there is in the games the technique comes
+from, so a bot that air strafes arrives *later* than one that holds forward.
+Making it pay would mean retuning the movement itself, which changes the game
+for human players too - a design decision, not a bot change.
+
+A related trap already paid for: the first version of bunny hopping jumped
+whenever the bot was grounded and moving. That left it airborne 90.6% of the
+time averaging 7.7 m/s - slower than the bot that merely walked - because a
+player in the air can barely accelerate. Airborne time is only worth having if
+something is being gained during it.
+
 Two things learned the hard way while tuning the steering, both measured:
 
 - **Walls and pits are not the same constraint.** Running into a wall is

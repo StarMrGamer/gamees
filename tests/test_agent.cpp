@@ -182,3 +182,54 @@ TEST(agent_reset_clears_target) {
   CHECK(!m.aim_init);
   CHECK(!m.has_last_known);
 }
+
+// The bot must actually use the engine's movement tech, not just walk. Ground
+// speed is capped at GROUND_MAX_SPEED, so sustained travel above it can only
+// come from dashes, slides and slide-jumps.
+TEST(demon_uses_movement_tech_to_exceed_walking_speed) {
+  auto map = std::make_unique<Map>();
+  // A long open corridor with a target at the far end, so the bot commits to
+  // travelling rather than circling a nearby enemy.
+  CHECK(map_parse("name runway\n"
+                  "box -6 -1 -120 12 1 240 0.5 0.5 0.5\n"
+                  "box -7 0 -120 1 8 240 0.4 0.4 0.4\n"
+                  "box 6 0 -120 1 8 240 0.4 0.4 0.4\n"
+                  "spawn 0 1 -100 0\n"
+                  "spawn 0 1 100 180\n",
+                  map.get()));
+  map_build_nav(map.get());
+  auto st = std::make_unique<GameState>();
+  Rng rng{0x2468ull};
+  game_init(*st, *map, 999);
+  game_player_join(*st, *map, "a");
+  game_player_join(*st, *map, "b");
+  st->players[0].pos = {0.0f, 0.0f, -100.0f};
+  st->players[1].pos = {0.0f, 0.0f, 100.0f};
+
+  AgentMemory mem;
+  agent_reset(mem);
+  const AgentConfig cfg = agent_config_demon();
+  float top = 0.0f;
+  int ticks_above_walk = 0;
+  int saw_dash = 0;
+  int saw_slide = 0;
+  for (int t = 0; t < 60 * 12; ++t) {
+    PlayerInput in[MAX_PLAYERS]{};
+    in[0] = agent_think(*st, *map, 0, AGENT_DEMON, cfg, mem, rng, TICK_DT);
+    in[0].sequence = static_cast<uint32_t>(t + 1);
+    if (in[0].buttons & BTN_DASH) ++saw_dash;
+    in[1].sequence = static_cast<uint32_t>(t + 1);
+    in[1].yaw = st->players[1].yaw;
+    game_tick(*st, *map, in, rng);
+    const Player& p = st->players[0];
+    if (p.sliding) ++saw_slide;
+    float sp = std::sqrt(p.vel.x * p.vel.x + p.vel.z * p.vel.z);
+    if (sp > top) top = sp;
+    if (sp > GROUND_MAX_SPEED + 0.5f) ++ticks_above_walk;
+  }
+  CHECK(saw_dash > 0);
+  CHECK(saw_slide > 0);
+  CHECK(top > GROUND_MAX_SPEED + 3.0f);
+  // And it must hold that speed rather than touching it once.
+  CHECK(ticks_above_walk > 60);
+}

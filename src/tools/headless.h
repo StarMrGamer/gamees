@@ -95,6 +95,12 @@ struct EvalSideStats {
   int shots = 0;
   int void_falls = 0;        // walked or fell out of the world
   double damage_dealt = 0.0;
+  // Movement quality. GROUND_MAX_SPEED is 8 m/s, so anything above that is the
+  // bot actually using dashes, slides and air control rather than walking.
+  double speed_sum = 0.0;
+  long long speed_samples = 0;
+  float top_speed = 0.0f;
+  int airborne_ticks = 0;
 };
 
 struct EvalReport {

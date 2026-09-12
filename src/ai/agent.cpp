@@ -53,14 +53,17 @@ float weapon_reach(uint8_t weapon) {
 // one-metre probe is a tenth of a second of warning, which it cannot act on.
 bool footing_ahead(const Map& map, Vec3 pos, Vec3 vel, Vec3 dir) {
   float speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
-  float lookahead = speed * 0.35f;
-  if (lookahead < 1.4f) lookahead = 1.4f;
-  if (lookahead > 3.5f) lookahead = 3.5f;
-  // Check a couple of points along the way, not just the far end: a gap
-  // narrower than the probe distance would otherwise be stepped straight over.
+  // Half a second of travel. The movement tech pushes the bot past 20 m/s, and
+  // the old 3.5 m cap was a sixth of a second of warning at that speed - it
+  // fell out of de_dust2 thirty-three times in twelve matches.
+  float lookahead = speed * 0.5f;
+  if (lookahead < 2.0f) lookahead = 2.0f;
+  if (lookahead > 10.0f) lookahead = 10.0f;
+  // Sample along the way, not just the far end: a gap narrower than the probe
+  // distance would otherwise be stepped straight over.
   const float max_drop = 6.0f;  // survivable; only a real pit should veto
-  for (int i = 1; i <= 2; ++i) {
-    Vec3 probe = pos + dir * (lookahead * static_cast<float>(i) * 0.5f);
+  for (int i = 1; i <= 3; ++i) {
+    Vec3 probe = pos + dir * (lookahead * static_cast<float>(i) / 3.0f);
     probe.y += 0.5f;
     if (ray_map(map, probe, {0.0f, -1.0f, 0.0f}, max_drop + 0.5f) > max_drop) return false;
   }
@@ -193,6 +196,99 @@ uint16_t move_buttons(Vec3 move, float yaw) {
   if (r > 0.35f) b |= BTN_RIGHT;
   if (r < -0.35f) b |= BTN_LEFT;
   return b;
+}
+
+// An edge-triggered button: the engine only acts on the press, so holding the
+// bit does nothing after the first tick. Returns whether to set it now.
+bool press(bool want, bool* held) {
+  if (!want) {
+    *held = false;
+    return false;
+  }
+  if (*held) {
+    *held = false;  // release for one tick so the next one is an edge again
+    return false;
+  }
+  *held = true;
+  return true;
+}
+
+// Everything the engine offers beyond walking: slide-jumps, dashes, wall jumps,
+// double jumps and air strafing.
+//
+// The naive version of this - jump whenever you are on the ground and moving -
+// is actively harmful, and measurably so: it left the bot airborne 90.6% of the
+// time at an average 7.7 m/s, *slower* than the bot that just walked, because
+// AIR_WISH_CAP is 1.0 and a player in the air can barely accelerate. Airborne
+// time is only worth having if it is spent air strafing.
+// Air strafing is deliberately absent, and that is a measured decision rather
+// than an omission. This engine's air acceleration is capped on the wish
+// direction's *projection* onto velocity (AIR_WISH_CAP, 1 m/s), which makes
+// the only available gain perpendicular - it curves you. Over 20 s on flat
+// ground: walking covers 159.9 m at 8.00 m/s; holding the wish perpendicular
+// reaches 11.12 m/s average and 18 m/s peak but covers 42.4 m, because it is
+// travelling in a circle; and real half-beat strafing, swept from 20 to 70
+// degrees of yaw swing, peaked at 99.3 m - still worse than walking.
+//
+// There is no compounding here the way there is in the games this technique
+// comes from, so a bot that air strafes arrives later than one that holds
+// forward. Making it pay would mean changing the movement tuning, which is a
+// gameplay decision for humans too, not a bot change.
+//
+// What does pay in this engine is impulses: dash (+12 m/s), slide (+2) and
+// slide-jump (+3).
+struct TechResult {
+  uint16_t buttons;
+};
+
+// `journey` is how far away the ultimate destination is, not the next
+// waypoint. Gating on the waypoint distance instead silently disabled air
+// strafing everywhere the navmesh was in use, because its waypoints are
+// NAV_CELL_XZ apart - three metres, never the twelve the gate wanted.
+TechResult movement_tech(const Map& map, const Player& me, AgentMemory& m, Vec3 desired,
+                         bool engaging) {
+  TechResult out{0};
+  Vec3 vel_h{me.vel.x, 0.0f, me.vel.z};
+  float speed = vec3_length(vel_h);
+  // Keep one charge in reserve while fighting: a dodge you cannot afford is
+  // worth more than a metre per second of travel.
+  const int reserve = engaging ? 1 : 0;
+
+  if (!me.on_ground) {
+    // A wall jump costs no stamina, keeps horizontal speed and adds height.
+    // It is strictly the best thing to do while touching a wall.
+    if (me.wall_contact_time > 0.0f && me.wall_jump_cooldown <= 0.0f) {
+      if (press(true, &m.held_jump)) out.buttons |= BTN_JUMP;
+    }
+    // A double jump out of a fall: crossing a gap, or breaking someone's aim.
+    bool falling = me.vel.y < -1.5f;
+    bool want_air_jump = falling && !me.air_jump_used && me.stamina > reserve &&
+                         (engaging ? me.health < player_class_max_health(me.player_class) * 0.5f
+                                   : !footing_ahead(map, me.pos, me.vel, vec3_normalize(desired)));
+    if (want_air_jump && vec3_length(desired) > 0.001f) {
+      if (press(true, &m.held_airjump)) out.buttons |= BTN_AIRJUMP;
+    }
+    return out;
+  }
+
+  // On the ground. A slide costs nothing and adds SLIDE_BOOST, and jumping out
+  // of one adds SLIDE_JUMP_BOOST on top - together worth 5 m/s, which is most
+  // of a second of running. It needs SLIDE_TRIGGER_SPEED to start, which is
+  // above GROUND_MAX_SPEED, so a dash is what gets the chain going.
+  if (me.sliding) {
+    out.buttons |= BTN_CROUCH;
+    if (press(true, &m.held_jump)) out.buttons |= BTN_JUMP;
+  } else if (speed > SLIDE_TRIGGER_SPEED) {
+    out.buttons |= BTN_CROUCH;  // level-triggered, no edge needed
+  } else if (speed > GROUND_MAX_SPEED * 0.6f) {
+    // Too slow to slide: a plain hop at least preserves what speed there is.
+    if (press(true, &m.held_jump)) out.buttons |= BTN_JUMP;
+  }
+
+  bool want_dash = me.dash_cooldown <= 0.0f && me.stamina > reserve &&
+                   speed < SLIDE_TRIGGER_SPEED + 2.0f && vec3_length(desired) > 0.001f;
+  if (want_dash && press(true, &m.held_dash)) out.buttons |= BTN_DASH;
+  return out;
 }
 
 PlayerInput think_simple(AgentMemory& m, float dt) {
@@ -435,24 +531,9 @@ PlayerInput agent_think(const GameState& s, const Map& map, int self, AgentKind 
       move = chosen;
     }
   }
+  // ---- movement tech ------------------------------------------------------
   in.buttons |= move_buttons(move, in.yaw);
-
-  // ---- jumps and dashes ---------------------------------------------------
-  // Bunny hopping: jumping the moment it lands keeps the speed the ground
-  // friction would otherwise scrub off, so a moving bot stays moving.
-  mem.jump_timer -= dt;
-  float speed = std::sqrt(me.vel.x * me.vel.x + me.vel.z * me.vel.z);
-  if (me.on_ground && (in.buttons & (BTN_FORWARD | BTN_BACK | BTN_LEFT | BTN_RIGHT)) &&
-      speed > GROUND_MAX_SPEED * 0.55f && mem.jump_timer <= 0.0f) {
-    in.buttons |= BTN_JUMP;
-    mem.jump_timer = 0.06f;
-  }
-  // Dash to break a firing line or to close one, never while standing still.
-  if (engaging && me.stamina > 0 && speed > 2.0f) {
-    float dist = vec3_length(s.players[best].pos - me.pos);
-    bool want_dash = (dist > preferred_range(me.weapon) * 1.8f) || (me.health < max_hp * 0.35f);
-    if (want_dash && rng_float(rng, 0.0f, 1.0f) < 0.02f) in.buttons |= BTN_DASH;
-  }
+  in.buttons |= movement_tech(map, me, mem, move, engaging).buttons;
 
   return in;
 }

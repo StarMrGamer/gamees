@@ -36,6 +36,10 @@ struct AgentMemory {
 
   // Navigation. A route is followed for a while rather than recomputed every
   // tick: an A* query is ~10 us and the answer barely changes at 60 Hz.
+  // Buttons the engine edge-triggers (jump, dash, air jump) have to be
+  // released before they can fire again, so the bot tracks what it held.
+  bool held_jump, held_dash, held_airjump;
+
   NavPath path;
   int path_index;
   float repath_timer;
