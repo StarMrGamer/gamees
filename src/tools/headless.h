@@ -106,6 +106,10 @@ struct EvalReport {
   double avg_match_seconds = 0.0;
   double ticks_per_second = 0.0;
   bool nan_seen = false;
+  // Reported because a silent fallback to direct steering changes the result
+  // completely, and a run that quietly lost its navmesh should say so.
+  bool nav_built = false;
+  int nav_nodes = 0;
 };
 
 // `a_kind`/`b_kind` are AgentKind values (see ai/agent.h); taken as int here so

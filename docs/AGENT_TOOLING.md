@@ -132,11 +132,22 @@ Current standing, `demon` vs the original `simple` bot:
 | arena     | 40 - 0 |         600 |          -65 |            0 |
 | de_dust2  | 30 - 0 |          71 |         -235 |            2 |
 
-**Known limit: there is no pathfinding.** The bot steers toward its target and
-avoids what it can see locally. That is enough on `arena`, where matches reach
-the frag limit; on de_dust2 (167 x 140 m) the matches run out of clock instead,
-so the win is on differential rather than on reaching the limit. Fixing that
-means a navmesh, not a better steering heuristic.
+Bots path over a navmesh (`src/game/nav.h`) built from the same reachability
+walk `--check-map` uses. `--eval` prints whether it built; if it says
+`UNAVAILABLE` the bots are steering straight and the numbers mean something
+else entirely.
+
+de_dust2 is large enough (167 x 140 m) that a duel to 15 frags takes about
+8.5 minutes of match time, so the default 180 s limit ends it on differential.
+Use `--match-seconds 800` to let it run to the limit. What the navmesh is
+worth, measured on de_dust2 at a fixed time limit:
+
+| time limit | navmesh off | navmesh on |
+|------------|------------:|-----------:|
+| 400 s      | 6.2 frags/match | **11.2** |
+| 800 s      | 11.5, matches run 761 s | **15.0 (the limit), 514 s** |
+
+Without it the bot never reaches the frag limit at any ceiling tried.
 
 ## `--check-map` - map validation
 

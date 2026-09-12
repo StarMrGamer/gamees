@@ -195,7 +195,7 @@ constexpr float REACH_Y_QUANTUM = 0.25f;
 // A plain jump clears 1.225 m (JUMP_VELOCITY^2 / 2*GRAVITY). Anything above
 // that needs a double jump or a rocket, which is not what "can you walk out of
 // the map" is asking about.
-constexpr float REACH_CLIMB = 1.225f;
+constexpr float REACH_CLIMB = REACH_CLIMB_HEIGHT;
 // Give up on a fall after four seconds; by then the player is either resting
 // or well past the void plane.
 constexpr int REACH_FALL_TICKS = 4 * TICK_RATE;
@@ -237,6 +237,10 @@ bool drop_to_rest(const Map& map, Vec3 from, Vec3* out) {
 }  // namespace
 
 MapReachReport map_check_reachable_leaks(const Map& map) {
+  return map_walk_reachable(map, nullptr);
+}
+
+MapReachReport map_walk_reachable(const Map& map, ReachVisitor* visitor) {
   MapReachReport rep;
   if ((map.box_count <= 0 && map.ramp_count <= 0) || map.spawn_count <= 0) return rep;
   rep.ran = true;
@@ -280,6 +284,8 @@ MapReachReport map_check_reachable_leaks(const Map& map) {
     queue.pop_back();
     ++rep.reachable_positions;
     if (rep.reachable_positions > REACH_MAX_POSITIONS) break;
+    Vec3 here{world_x(node.ix), node.y, world_x(node.iz)};
+    if (visitor) visitor->node(here);
 
     for (int d = 0; d < 4; ++d) {
       int nix = node.ix + dx[d];
@@ -317,6 +323,7 @@ MapReachReport map_check_reachable_leaks(const Map& map) {
       }
       // Landing far below is legal (a drop into a pit); it is only a leak if
       // they never land at all, which drop_to_rest already told us.
+      if (visitor) visitor->edge(here, rest);
       push(cell_x(rest.x), cell_x(rest.z), rest.y);
     }
   }

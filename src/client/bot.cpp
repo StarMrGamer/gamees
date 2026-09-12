@@ -31,6 +31,7 @@ int bot_main(NetAddress server, const char* name, int lifetime_seconds) {
   double start = bot_now();
   double last = start;
   uint32_t sequence = 0;
+  bool nav_ready = false;
   while (lifetime_seconds <= 0 || bot_now() - start < lifetime_seconds) {
     double now = bot_now();
     float dt = static_cast<float>(now - last);
@@ -46,6 +47,12 @@ int bot_main(NetAddress server, const char* name, int lifetime_seconds) {
     // bot thinks from the same picture a human player is looking at - and
     // falls back to walking forward if the server's map is not available
     // locally, which is the same condition that disables prediction.
+    if (c.prediction_ready && !nav_ready) {
+      // The client loads the map for prediction; the bot needs a navmesh on
+      // top of it. Built once, the first time the map is available.
+      map_build_nav(&c.prediction_map);
+      nav_ready = true;
+    }
     if (c.prediction_ready && c.player_index >= 0 && c.player_index < MAX_PLAYERS) {
       client_view_state(c, view.get());
       in = agent_think(*view, c.prediction_map, c.player_index, AGENT_DEMON, cfg, mem, rng, dt);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/math.h"
+#include "game/nav.h"
 
 #include <cstdint>
 
@@ -166,11 +167,27 @@ struct Map {
   // teleported back to a spawn with zero momentum.
   float void_y;
   MapGrid grid;
+  // Built on request, not on load: the walk it comes from takes ~0.15 s on
+  // de_dust2 and only bots need it, so a human client never pays for it.
+  NavMesh nav;
 };
 
 // Builds `out->grid` from the map's boxes and ramps. map_parse() calls this
 // already; only call it directly after mutating geometry by hand.
 void map_build_grid(Map* out);
+
+// Builds `out->nav` by walking the map the way a player does. Not called by
+// map_load(): it costs a reachability search, and only bots need the result.
+// Safe to call twice; the second call rebuilds.
+void map_build_nav(Map* out);
+
+// Nearest navmesh node to a world position, or -1 if the mesh is not built.
+int nav_nearest_node(const Map& map, Vec3 p);
+
+// Route between two world positions over the navmesh. Returns false when
+// either end is off-mesh or no route exists; callers fall back to steering
+// straight at the goal.
+bool nav_find_path(const Map& map, Vec3 from, Vec3 to, NavPath* out);
 
 // Fills in a brush's cached bounds from its plane set, and appends the six
 // axis-aligned bevel planes. Returns false if the planes do not bound a solid.

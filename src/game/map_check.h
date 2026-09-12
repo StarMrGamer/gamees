@@ -47,3 +47,22 @@ struct MapReachReport {
 };
 
 MapReachReport map_check_reachable_leaks(const Map& map);
+
+// The walk above, with a hook. Anything that needs to know where a player can
+// actually go - the leak check, the navmesh - must go through this one search,
+// or the two answers drift and the bot ends up routed through a wall the leak
+// checker knows is solid.
+// The tallest step the reachability walk will climb. Exposed because the
+// navmesh needs the same number: it decides whether a step discovered in one
+// direction can be assumed to work in reverse.
+constexpr float REACH_CLIMB_HEIGHT = 1.225f;
+
+struct ReachVisitor {
+  virtual ~ReachVisitor() = default;
+  // A standing position the search reached.
+  virtual void node(Vec3 pos) { (void)pos; }
+  // A step the player physics accepted, from one standing position to another.
+  virtual void edge(Vec3 from, Vec3 to) { (void)from; (void)to; }
+};
+
+MapReachReport map_walk_reachable(const Map& map, ReachVisitor* visitor);

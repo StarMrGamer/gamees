@@ -235,11 +235,20 @@ bool headless_eval(const char* map_path, int a_kind, int b_kind, const EvalOptio
     if (error) *error = std::string("failed to load map '") + (map_path ? map_path : "") + "'";
     return false;
   }
+  // Bots path over this; nothing else in the engine needs it, so it is built
+  // here rather than in map_load().
+  bool r_nav_built = false;
+  int r_nav_nodes = 0;
+  map_build_nav(&map);
+  r_nav_built = map.nav.built;
+  r_nav_nodes = map.nav.node_count;
   int per_side = opts.per_side < 1 ? 1 : opts.per_side;
   if (per_side * 2 > MAX_PLAYERS) per_side = MAX_PLAYERS / 2;
   const int count = per_side * 2;
 
   EvalReport r;
+  r.nav_built = r_nav_built;
+  r.nav_nodes = r_nav_nodes;
   r.matches = opts.matches;
   r.a_name = agent_name(a_kind);
   r.b_name = agent_name(b_kind);
@@ -377,10 +386,13 @@ std::string eval_report_json(const EvalReport& r) {
                 "\"frags\":%d,\"deaths\":%d,\"shots\":%d,\"void_falls\":%d,\"damage\":%.0f},"
                 "\"b\":{\"name\":\"%s\",\"wins\":%d,\"frags\":%d,\"deaths\":%d,\"shots\":%d,"
                 "\"void_falls\":%d,\"damage\":%.0f},"
+                "\"nav_built\":%s,\"nav_nodes\":%d,"
                 "\"avg_match_seconds\":%.1f,\"ticks_per_second\":%.0f,\"nan\":%s}",
                 r.matches, r.draws, r.a_name, r.a.wins, r.a.frags, r.a.deaths, r.a.shots,
                 r.a.void_falls, r.a.damage_dealt, r.b_name, r.b.wins, r.b.frags, r.b.deaths,
-                r.b.shots, r.b.void_falls, r.b.damage_dealt, r.avg_match_seconds, r.ticks_per_second,
+                r.b.shots, r.b.void_falls, r.b.damage_dealt,
+                r.nav_built ? "true" : "false", r.nav_nodes,
+                r.avg_match_seconds, r.ticks_per_second,
                 r.nan_seen ? "true" : "false");
   return buf;
 }
@@ -393,10 +405,12 @@ std::string eval_report_text(const EvalReport& r) {
                 "%d matches: %s %d - %d %s (%d draws)\n"
                 "  %-7s win %5.1f%%  frags %5d  deaths %5d  damage %8.0f  shots %6d  fell out %d\n"
                 "  %-7s win %5.1f%%  frags %5d  deaths %5d  damage %8.0f  shots %6d  fell out %d\n"
+                "  navmesh %s (%d nodes)\n"
                 "  average match %.1f s, %.0f sim ticks/s (%.0fx realtime)",
                 r.matches, r.a_name, r.a.wins, r.b.wins, r.b_name, r.draws,
                 r.a_name, win_a, r.a.frags, r.a.deaths, r.a.damage_dealt, r.a.shots, r.a.void_falls,
                 r.b_name, 100.0 - win_a, r.b.frags, r.b.deaths, r.b.damage_dealt, r.b.shots, r.b.void_falls,
+                r.nav_built ? "built" : "UNAVAILABLE - bots steer straight", r.nav_nodes,
                 r.avg_match_seconds, r.ticks_per_second, r.ticks_per_second / TICK_RATE);
   return buf;
 }

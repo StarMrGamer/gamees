@@ -32,6 +32,7 @@ set(ARENA_SOURCES
   src/game/map.cpp
   src/game/map_check.cpp
   src/game/movement.cpp
+  src/game/nav.cpp
   src/game/sim.cpp
   src/game/snapshot.cpp
   src/game/weapons.cpp
@@ -70,6 +71,7 @@ add_executable(arena_tests
   tests/test_audio.cpp
   tests/test_config.cpp
   tests/test_movement.cpp
+  tests/test_nav.cpp
   tests/test_net.cpp
   tests/test_snapshot.cpp
   tests/test_weapons.cpp

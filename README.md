@@ -126,6 +126,8 @@ other:
   the importer instead of stair-steps).
 - `./build/arena --eval --map maps/arena.txt --matches 40` plays bot against bot
   headlessly and reports who won, at around 10000x realtime.
+- Bots navigate with a waypoint graph built by walking the map the way a player
+  does, so every route they follow is one the movement code actually accepts.
 - `./build/arena --check-map maps/<name>.txt` voxelises the map and checks that
   no spawn is reachable from outside through a gap in the walls, printing the
   first leak if one is found.

@@ -3,6 +3,7 @@
 #include "core/rng.h"
 #include "game/game_state.h"
 #include "game/map.h"
+#include "game/nav.h"
 
 // Bot brains. This produces a PlayerInput from a GameState and nothing else -
 // no sockets, no rendering, no wall clock - so the same code drives a live
@@ -32,6 +33,14 @@ struct AgentMemory {
   float wander_timer;
   float jump_timer;
   float clock;               // seconds lived, for the simple bot's sine
+
+  // Navigation. A route is followed for a while rather than recomputed every
+  // tick: an A* query is ~10 us and the answer barely changes at 60 Hz.
+  NavPath path;
+  int path_index;
+  float repath_timer;
+  Vec3 path_goal;            // what the current route was planned toward
+  bool has_path;
 };
 
 // Skill knobs. Separating them from the code is what makes a difficulty slider

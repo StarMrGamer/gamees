@@ -85,6 +85,7 @@ static void print_usage() {
       "  --ticks N, --players N         --simulate length and player count\n"
       "  --seconds N                    --netcheck duration\n"
       "  --matches N                    --eval match count (default 100)\n"
+      "  --match-seconds N              --eval time limit per match (default 180)\n"
       "  --eval-a NAME, --eval-b NAME   agents to pit: simple | demon (default demon vs simple)\n"
       "  --handicap-a F, --handicap-b F 0 = full strength, 1 = maximally handicapped\n"
       "  --seed N, --trace-every N      --simulate determinism seed and trace sampling\n"
@@ -222,6 +223,10 @@ int main(int argc, char** argv) {
       int value = std::atoi(argv[++i]);
       if (value <= 0) fatal_error("invalid --matches");
       eval_options.matches = value;
+    } else if (std::strcmp(argv[i], "--match-seconds") == 0 && i + 1 < argc) {
+      int value = std::atoi(argv[++i]);
+      if (value <= 0) fatal_error("invalid --match-seconds");
+      eval_options.max_ticks = value * TICK_RATE;
     } else if (std::strcmp(argv[i], "--eval-a") == 0 && i + 1 < argc) {
       eval_a = parse_agent(argv[++i]);
     } else if (std::strcmp(argv[i], "--eval-b") == 0 && i + 1 < argc) {

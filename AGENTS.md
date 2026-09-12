@@ -69,6 +69,31 @@ the networked `--bot`, the headless `--eval` harness, and (later) the
 demonstrations a learned policy trains against. Keep it that way, or those three
 stop agreeing about what the bot does.
 
+The navmesh in `src/game/nav.h` is **generated from the reachability walk, not
+from the geometry**. `map_walk_reachable()` steps a real player hull around the
+level and resolves each step with the real drop physics, so every node is a
+position a player can stand in and every edge is a step the movement code
+actually accepted. A mesh derived from brushes instead would confidently route
+a bot through a gap narrower than its own shoulders. Anything that needs to
+know where a player can go must go through that one search.
+
+It is built by `map_build_nav()` on request, never by `map_load()`: the walk
+costs ~120 ms on de_dust2 and only bots need the result. Queries fail cleanly
+when it is absent and callers fall back to steering straight at the target.
+
+Two properties that are load-bearing and easy to break:
+
+- **Nodes are quantised in Y as well as XZ.** A tunnel and the bridge over it
+  are the same place in plan view; merging them puts a waypoint six metres
+  above the bot's head and it believes it has arrived.
+- **Edges are directed.** The walk only discovers a step in the direction it
+  travelled, and a drop off a ledge is not reversible. The return leg is only
+  added when the climb back is within `REACH_CLIMB_HEIGHT`, or bots grind
+  against cliffs forever.
+
+Measured: de_dust2 is 1712 nodes / 6770 links, built in 121 ms, and A* over it
+costs ~10 us. Turning it on took the bot from 6.2 to 11.2 frags per match there.
+
 `AGENT_SIMPLE` is the original hold-forward-and-spray bot. Do not delete it - it
 is the floor every later claim is measured against.
 

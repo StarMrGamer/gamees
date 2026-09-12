@@ -114,6 +114,44 @@ Vec3 steer(const Map& map, Vec3 pos, Vec3 vel, Vec3 desired, float bias) {
   return best;
 }
 
+// Follows a navmesh route toward `goal`, returning the heading to walk. Falls
+// back to pointing straight at the goal when there is no mesh or no route,
+// which is exactly the behaviour this replaced.
+//
+// The route is replanned on a timer rather than every tick: an A* query is
+// ~10 us and at 60 Hz the answer is the same one sixty times over.
+Vec3 follow_route(const Map& map, AgentMemory& m, Vec3 from, Vec3 goal, float dt) {
+  Vec3 direct = goal - from;
+  direct.y = 0.0f;
+  if (!map.nav.built) return direct;
+
+  m.repath_timer -= dt;
+  bool goal_moved = vec3_length(goal - m.path_goal) > 4.0f;
+  if (!m.has_path || m.repath_timer <= 0.0f || goal_moved) {
+    m.has_path = nav_find_path(map, from, goal, &m.path);
+    m.path_index = 0;
+    m.path_goal = goal;
+    m.repath_timer = 0.5f;
+  }
+  if (!m.has_path || m.path.count <= 0) return direct;
+
+  // Drop waypoints already reached. Horizontal distance only: a waypoint on
+  // the floor you are standing on is reached even though its recorded height
+  // is half a metre off.
+  while (m.path_index < m.path.count) {
+    Vec3 wp = map.nav.nodes[m.path.nodes[m.path_index]];
+    Vec3 d = wp - from;
+    d.y = 0.0f;
+    if (vec3_length(d) > 2.0f || std::fabs(wp.y - from.y) > 2.5f) break;
+    ++m.path_index;
+  }
+  if (m.path_index >= m.path.count) return direct;
+  Vec3 wp = map.nav.nodes[m.path.nodes[m.path_index]];
+  Vec3 d = wp - from;
+  d.y = 0.0f;
+  return d;
+}
+
 void aim_at(AgentMemory& m, Vec3 from, Vec3 to, float turn_rate, float dt) {
   Vec3 d = to - from;
   float flat = std::sqrt(d.x * d.x + d.z * d.z);
@@ -258,6 +296,7 @@ PlayerInput agent_think(const GameState& s, const Map& map, int self, AgentKind 
   }
 
   if (best >= 0) {
+    mem.has_path = false;  // fighting moves it; any standing route is stale
     if (best != mem.target) {
       mem.target = best;
       mem.target_lock = 0.0f;
@@ -356,8 +395,7 @@ PlayerInput agent_think(const GameState& s, const Map& map, int self, AgentKind 
   // ---- movement ----------------------------------------------------------
   Vec3 move{0.0f, 0.0f, 0.0f};
   if (pickup >= 0 && (!engaging || pickup_dist < 12.0f)) {
-    move = s.pickups[pickup].pos - me.pos;
-    move.y = 0.0f;
+    move = follow_route(map, mem, me.pos, s.pickups[pickup].pos, dt);
   } else if (engaging) {
     const Player& t = s.players[best];
     Vec3 to = t.pos - me.pos;
@@ -376,11 +414,9 @@ PlayerInput agent_think(const GameState& s, const Map& map, int self, AgentKind 
     }
     move = toward * radial + side * (mem.strafe_sign * 0.9f);
   } else if (mem.has_last_known) {
-    move = mem.last_known - me.pos;
-    move.y = 0.0f;
+    move = follow_route(map, mem, me.pos, mem.last_known, dt);
   } else if (hunt >= 0) {
-    move = s.players[hunt].pos - me.pos;
-    move.y = 0.0f;
+    move = follow_route(map, mem, me.pos, s.players[hunt].pos, dt);
   } else {
     move = Vec3{std::sin(mem.wander_yaw), 0.0f, -std::cos(mem.wander_yaw)};
   }
