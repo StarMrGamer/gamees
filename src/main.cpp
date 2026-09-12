@@ -27,10 +27,14 @@
 
 // Agent names for --eval-a / --eval-b. Kept beside the flag parser for the same
 // reason as print_usage(): a name that parses but is not listed is a trap.
-static int parse_agent(const char* name) {
+static int parse_agent(const char* name, int* skill_out) {
   if (std::strcmp(name, "simple") == 0) return AGENT_SIMPLE;
-  if (std::strcmp(name, "demon") == 0) return AGENT_DEMON;
-  fatal_error("unknown agent, expected 'simple' or 'demon'");
+  AgentSkill skill = SKILL_DEMON;
+  if (agent_skill_parse(name, &skill)) {
+    if (skill_out) *skill_out = skill;
+    return AGENT_DEMON;
+  }
+  fatal_error("unknown agent, expected simple | easy | normal | hard | demon");
   return AGENT_SIMPLE;
 }
 
@@ -86,7 +90,8 @@ static void print_usage() {
       "  --seconds N                    --netcheck duration\n"
       "  --matches N                    --eval match count (default 100)\n"
       "  --match-seconds N              --eval time limit per match (default 180)\n"
-      "  --eval-a NAME, --eval-b NAME   agents to pit: simple | demon (default demon vs simple)\n"
+      "  --eval-a NAME, --eval-b NAME   agents to pit: simple | easy | normal | hard | demon\n"
+      "  --bot-skill NAME               --bot difficulty: easy | normal | hard | demon (default normal)\n"
       "  --handicap-a F, --handicap-b F 0 = full strength, 1 = maximally handicapped\n"
       "  --seed N, --trace-every N      --simulate determinism seed and trace sampling\n"
       "  --json                         machine-readable output for tool modes\n"
@@ -186,6 +191,10 @@ int main(int argc, char** argv) {
   // --simulate defaults to four players; --eval defaults to a duel. Without
   // this the evaluator would quietly run 2v2 and report it as a duel.
   bool players_set = false;
+  // The live bot defaults to `normal`, not `demon`. Demon has a 360-degree
+  // field of view and 515 deg/s of aim; it exists to be a fixed yardstick for
+  // measurement, not an opponent.
+  int bot_skill = SKILL_NORMAL;
   NetCheckOptions netcheck_options;
   Vec3 probe_pos{};
   uint16_t port = DEFAULT_PORT;
@@ -219,6 +228,12 @@ int main(int argc, char** argv) {
       }
     } else if (std::strcmp(argv[i], "--eval") == 0) {
       mode = MODE_EVAL;
+    } else if (std::strcmp(argv[i], "--bot-skill") == 0 && i + 1 < argc) {
+      AgentSkill parsed = SKILL_NORMAL;
+      if (!agent_skill_parse(argv[++i], &parsed)) {
+        fatal_error("unknown --bot-skill, expected easy | normal | hard | demon");
+      }
+      bot_skill = parsed;
     } else if (std::strcmp(argv[i], "--matches") == 0 && i + 1 < argc) {
       int value = std::atoi(argv[++i]);
       if (value <= 0) fatal_error("invalid --matches");
@@ -228,9 +243,9 @@ int main(int argc, char** argv) {
       if (value <= 0) fatal_error("invalid --match-seconds");
       eval_options.max_ticks = value * TICK_RATE;
     } else if (std::strcmp(argv[i], "--eval-a") == 0 && i + 1 < argc) {
-      eval_a = parse_agent(argv[++i]);
+      eval_a = parse_agent(argv[++i], &eval_options.skill_a);
     } else if (std::strcmp(argv[i], "--eval-b") == 0 && i + 1 < argc) {
-      eval_b = parse_agent(argv[++i]);
+      eval_b = parse_agent(argv[++i], &eval_options.skill_b);
     } else if (std::strcmp(argv[i], "--handicap-a") == 0 && i + 1 < argc) {
       eval_options.handicap_a = static_cast<float>(std::atof(argv[++i]));
     } else if (std::strcmp(argv[i], "--handicap-b") == 0 && i + 1 < argc) {
@@ -571,7 +586,7 @@ int main(int argc, char** argv) {
   }
 
   if (mode == MODE_BOT) {
-    return bot_main(server, name, 0);
+    return bot_main(server, name, 0, bot_skill);
   }
 
   return game_client_main(server, name, nullptr, map_path, client_settings);

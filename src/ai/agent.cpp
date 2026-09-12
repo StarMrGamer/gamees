@@ -5,6 +5,7 @@
 #include "game/weapons.h"
 
 #include <cmath>
+#include <cstring>
 
 namespace {
 
@@ -305,17 +306,79 @@ PlayerInput think_simple(AgentMemory& m, float dt) {
 
 }  // namespace
 
-AgentConfig agent_config_demon() {
+// Difficulty tiers.
+//
+// The numbers that matter for fairness, with a human for scale: visual
+// reaction time is around 250 ms before the aim has moved at all, a flick is a
+// burst not a sustained rate, and nobody has a 360-degree field of view. The
+// original bot used 0.10 s, 9.0 rad/s (515 deg/s, sustained) and no FOV at
+// all, which is an aimbot that cannot be flanked. It is kept as DEMON because
+// it is a useful fixed opponent to measure against, not because it is fair.
+AgentConfig agent_config(AgentSkill skill) {
   AgentConfig c;
-  c.turn_rate = 9.0f;
-  c.reaction = 0.10f;
-  c.aim_error = 0.010f;
-  c.fire_cone = 0.06f;
   c.strafe_min = 0.35f;
   c.strafe_max = 0.95f;
   c.seek_health_below = 0.45f;
+  switch (skill) {
+    case SKILL_EASY:
+      c.turn_rate = 2.2f;     // 126 deg/s
+      c.reaction = 0.45f;
+      c.aim_error = 0.165f;   // up to ~9 degrees off
+      c.aim_drift_rate = 3.0f;
+      c.fire_cone = 0.22f;
+      c.fov = 1.05f;          // 120 degrees across
+      break;
+    case SKILL_NORMAL:
+      c.turn_rate = 3.6f;     // 206 deg/s
+      c.reaction = 0.30f;
+      c.aim_error = 0.075f;   // up to ~4 degrees
+      c.aim_drift_rate = 3.0f;
+      c.fire_cone = 0.12f;
+      c.fov = 1.22f;          // 140 degrees across
+      break;
+    case SKILL_HARD:
+      c.turn_rate = 5.5f;     // 315 deg/s
+      c.reaction = 0.22f;
+      c.aim_error = 0.030f;
+      c.aim_drift_rate = 3.0f;
+      c.fire_cone = 0.075f;
+      c.fov = 1.40f;          // 160 degrees across
+      break;
+    case SKILL_DEMON:
+    default:
+      c.turn_rate = 9.0f;
+      c.reaction = 0.10f;
+      c.aim_error = 0.010f;
+      c.aim_drift_rate = 3.0f;
+      c.fire_cone = 0.06f;
+      c.fov = PI;             // sees everything, in every direction
+      break;
+  }
   return c;
 }
+
+const char* agent_skill_name(AgentSkill skill) {
+  switch (skill) {
+    case SKILL_EASY: return "easy";
+    case SKILL_NORMAL: return "normal";
+    case SKILL_HARD: return "hard";
+    default: return "demon";
+  }
+}
+
+bool agent_skill_parse(const char* name, AgentSkill* out) {
+  if (!name || !out) return false;
+  for (int i = 0; i < SKILL_COUNT; ++i) {
+    AgentSkill s = static_cast<AgentSkill>(i);
+    if (std::strcmp(name, agent_skill_name(s)) == 0) {
+      *out = s;
+      return true;
+    }
+  }
+  return false;
+}
+
+AgentConfig agent_config_demon() { return agent_config(SKILL_DEMON); }
 
 AgentConfig agent_config_demon_handicapped(float handicap) {
   handicap = clampf(handicap, 0.0f, 1.0f);
@@ -324,13 +387,17 @@ AgentConfig agent_config_demon_handicapped(float handicap) {
   c.reaction = lerp(c.reaction, 0.55f, handicap);
   c.aim_error = lerp(c.aim_error, 0.090f, handicap);
   c.fire_cone = lerp(c.fire_cone, 0.16f, handicap);
+  c.fov = lerp(c.fov, 1.0f, handicap);
   return c;
 }
 
 void agent_reset(AgentMemory& m) {
+  uint32_t seen = m.last_event_seen;  // events are global; do not re-read old ones
   m = AgentMemory{};
   m.target = -1;
+  m.provoked_by = -1;
   m.strafe_sign = 1.0f;
+  m.last_event_seen = seen;
 }
 
 PlayerInput agent_think(const GameState& s, const Map& map, int self, AgentKind kind,
@@ -354,6 +421,23 @@ PlayerInput agent_think(const GameState& s, const Map& map, int self, AgentKind 
   // Visible enemies only, preferring the close and the wounded, with a bias
   // toward whoever is already being fought so the bot does not dither between
   // two equidistant targets and shoot neither.
+  // Anything that has shot us recently stays "noticed" for a moment even if it
+  // is outside the cone: getting hit tells a human roughly where it came from.
+  mem.provoked_time -= dt;
+  if (mem.provoked_time <= 0.0f) mem.provoked_by = -1;
+  for (int e = 0; e < MAX_EVENTS; ++e) {
+    const GameEvent& ev = s.events[e];
+    if (ev.id == 0 || ev.id <= mem.last_event_seen) continue;
+    if (ev.type == EV_HIT && ev.b == self && ev.a != self) {
+      mem.provoked_by = ev.a;
+      mem.provoked_time = 1.5f;
+    }
+  }
+  for (int e = 0; e < MAX_EVENTS; ++e) {
+    if (s.events[e].id > mem.last_event_seen) mem.last_event_seen = s.events[e].id;
+  }
+
+  const Vec3 look = angles_forward(me.yaw, me.pitch);
   int best = -1;
   float best_score = -1e30f;
   for (int i = 0; i < MAX_PLAYERS; ++i) {
@@ -361,6 +445,14 @@ PlayerInput agent_think(const GameState& s, const Map& map, int self, AgentKind 
     const Player& e = s.players[i];
     if (!e.active || !e.alive) continue;
     Vec3 c = body_center(e);
+    // Field of view first: it is a dot product, and it throws out most
+    // candidates before the raycast that would otherwise cost far more.
+    Vec3 to = c - eye;
+    float to_len = vec3_length(to);
+    if (to_len > 0.01f && i != mem.provoked_by) {
+      float cosang = vec3_dot(look, to / to_len);
+      if (cosang < std::cos(cfg.fov)) continue;
+    }
     if (!can_see(s, map, self, c)) continue;
     float dist = vec3_length(c - eye);
     float score = 100.0f / (dist + 4.0f) + (1.0f - e.health / PLAYER_MAX_HEALTH) * 12.0f;
@@ -458,8 +550,24 @@ PlayerInput agent_think(const GameState& s, const Map& map, int self, AgentKind 
   if (pickup >= 0 && !engaging) aim_point = s.pickups[pickup].pos + Vec3{0.0f, 1.0f, 0.0f};
 
   aim_at(mem, eye, aim_point, cfg.turn_rate, dt);
-  in.yaw = angle_wrap(mem.aim_yaw + rng_float(rng, -cfg.aim_error, cfg.aim_error));
-  in.pitch = clampf(mem.aim_pitch + rng_float(rng, -cfg.aim_error, cfg.aim_error), -1.5f, 1.5f);
+  // Let the error wander and pull it gently back toward centre. Independent
+  // noise each tick would average away across a burst and barely cost the bot
+  // anything; an offset that persists for a few tenths of a second is what
+  // actually makes shots miss.
+  //
+  // The kick has to be scaled by aim_error, not just the drift rate. Scaling it
+  // by the rate alone made the amplitude depend on how *fast* the error wanders
+  // rather than how *large* it is - which had the tiers backwards, giving
+  // `hard` more aim error than `easy`, and made easy, normal and hard measure
+  // identical at 0.25-0.28 damage per shot.
+  const float pull = cfg.aim_drift_rate * dt;
+  const float kick = cfg.aim_error * cfg.aim_drift_rate * dt * 3.0f;
+  mem.drift_yaw += rng_float(rng, -kick, kick) - mem.drift_yaw * pull;
+  mem.drift_pitch += rng_float(rng, -kick, kick) - mem.drift_pitch * pull;
+  mem.drift_yaw = clampf(mem.drift_yaw, -cfg.aim_error, cfg.aim_error);
+  mem.drift_pitch = clampf(mem.drift_pitch, -cfg.aim_error, cfg.aim_error);
+  in.yaw = angle_wrap(mem.aim_yaw + mem.drift_yaw);
+  in.pitch = clampf(mem.aim_pitch + mem.drift_pitch, -1.5f, 1.5f);
 
   // ---- weapon ------------------------------------------------------------
   // Rockets at middling range against something on the ground, where splash

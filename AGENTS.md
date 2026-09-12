@@ -103,6 +103,74 @@ line-of-sight raycast. The split is deliberate and worth preserving. Without the
 navigation half, two bots on de_dust2 never meet and 30 of 30 matches time out;
 without the aiming half, it is a wallhack and useless as a training opponent.
 
+### Difficulty
+
+Four tiers, picked by `agent_config(AgentSkill)` (names from
+`agent_skill_name`, parsed by `agent_skill_parse`): `easy`, `normal`, `hard`,
+`demon`. `--bot-skill` and `--eval-a`/`--eval-b` take the names; the live bot
+defaults to `normal`. `demon` is the original bot - 9.0 rad/s, 0.10 s reaction,
+no FOV - preserved as the top of the ladder so every earlier measurement stays
+comparable. It is not meant to be fair.
+
+Three knobs do the work, and each is load-bearing:
+
+- **`fov`** is the half-angle the bot may *acquire* targets in. `demon` uses
+  `PI` and can never be flanked; the others cannot see behind themselves, which
+  is most of what makes the lower tiers beatable. Two rules follow. The dot
+  product is checked before the raycast because it is cheap and rejects most
+  candidates. And a recent **hit** bypasses the cone (`provoked_by`, 1.5 s):
+  being shot from behind tells a human roughly where it came from, so a narrow
+  FOV must not turn the bot into something that can be shot in the back for free.
+- **`aim_error`** is the *size* of the persistent aim wander, not per-tick noise.
+  Pure jitter averages out over a burst and barely costs a shot; an offset that
+  persists for a few tenths of a second is what actually misses. `aim_drift_rate`
+  is how fast it wanders and `agent_think` scales the kick by `aim_error * rate`
+  - scaling by the rate alone made the tiers backwards (more error the faster it
+  drifted) and flatlined easy/normal/hard at the same damage per shot.
+- **`reaction`** is seconds of unbroken sight before the trigger unlocks.
+
+`agent_config_demon_handicapped(0.0f)` still equals `agent_config(SKILL_DEMON)`
+exactly, so a mirror match is a real mirror. Handicap scales within a tier and
+is applied on top of it in `--eval`, so a ladder can be coarse or continuous.
+Tests to keep honest: `skill_tiers_are_ordered_by_strength` (every knob moves
+monotonically), `skill_names_round_trip_and_reject_junk`,
+`fov_blinds_the_lower_tiers_from_behind`, and
+`being_shot_pulls_the_bot_onto_an_out_of_view_enemy`.
+
+### Difficulty, and what made it unbeatable
+
+Played against a human, the first version was unbeatable, and the reason was
+structural rather than a number being too high: **target acquisition raycast
+from the eye in every direction**, so the bot could not be flanked. It also ran
+a 0.10 s reaction (a human's is ~0.25 s before the aim has even moved) and
+9.0 rad/s of sustained aim sweep, which is 515 deg/s.
+
+`AgentConfig::fov` fixes the structural half. `EV_HIT` carries the attacker, so
+a bot that is shot from outside its cone still turns round - being hit is
+information a human gets, and without modelling it a narrow FOV makes the bot
+free to flank rather than merely beatable.
+
+The tiers are easy / normal / hard / demon. **Demon is the original bot, kept
+deliberately as a fixed yardstick so earlier measurements stay comparable; it
+is not meant to be fair.** The live `--bot` defaults to `normal`.
+
+Two measurement traps here, both paid for:
+
+- **Aim error has to be correlated over time.** Independent per-tick jitter
+  averages out across a burst, so a bot with "error" still lands nearly every
+  shot. The error is a slow drift instead.
+- **Scale the drift by its amplitude, not its rate.** Keying the kick to
+  `aim_drift_rate` alone made the wander depend on how fast it moved rather
+  than how large it was, which put the tiers backwards - `hard` had more aim
+  error than `easy` - and made easy, normal and hard measure identical at
+  0.25-0.28 damage per shot. Against a fixed `simple` opponent the tiers should
+  read 0.20 / 0.26 / 0.47 / 0.78 damage per shot.
+
+Bot-vs-bot is a weak proxy for human difficulty: two bots approach each other
+head-on, so field of view and turn rate barely matter between them. Check a
+tier against the fixed `simple` bot for aim quality, and against a human for
+whether it is fair.
+
 ### Movement tech, and the one that does not work
 
 The bot uses dashes, slides, slide-jumps, wall jumps and double jumps. These

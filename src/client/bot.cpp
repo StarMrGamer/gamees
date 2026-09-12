@@ -2,6 +2,7 @@
 
 #include "ai/agent.h"
 #include "client/client.h"
+#include "core/log.h"
 #include "core/rng.h"
 #include "game/game_state.h"
 #include "game/tuning.h"
@@ -17,15 +18,17 @@ static double bot_now() {
   return std::chrono::duration<double>(Clock::now() - start).count();
 }
 
-int bot_main(NetAddress server, const char* name, int lifetime_seconds) {
+int bot_main(NetAddress server, const char* name, int lifetime_seconds, int skill) {
   auto client = std::make_unique<Client>();
   Client& c = *client;
   if (!client_start(c, server, name ? name : "bot")) return 1;
 
   auto view = std::make_unique<GameState>();
-  AgentMemory mem;
+  AgentMemory mem{};
   agent_reset(mem);
-  const AgentConfig cfg = agent_config_demon();
+  const AgentConfig cfg = agent_config(static_cast<AgentSkill>(skill));
+  log_info("bot '%s' at %s difficulty", name ? name : "bot",
+           agent_skill_name(static_cast<AgentSkill>(skill)));
   Rng rng{0x1234abcdull ^ static_cast<uint64_t>(server.port)};
 
   double start = bot_now();

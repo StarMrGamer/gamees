@@ -38,7 +38,7 @@ void duel(AgentKind a, AgentKind b, int ticks, int* frags_a, int* frags_b,
   game_player_join(*st, *map, "a");
   game_player_join(*st, *map, "b");
 
-  AgentMemory mem[2];
+  AgentMemory mem[2]{};
   agent_reset(mem[0]);
   agent_reset(mem[1]);
   const AgentConfig cfg = agent_config_demon();
@@ -94,7 +94,7 @@ TEST(agent_inputs_stay_in_range) {
   game_init(*st, *map, 999);
   game_player_join(*st, *map, "a");
   game_player_join(*st, *map, "b");
-  AgentMemory mem[2];
+  AgentMemory mem[2]{};
   agent_reset(mem[0]);
   agent_reset(mem[1]);
   const AgentConfig cfg = agent_config_demon();
@@ -137,7 +137,7 @@ TEST(agent_holds_fire_without_line_of_sight) {
   st->players[0].pos = {-10.0f, 0.0f, 0.0f};
   st->players[1].pos = {10.0f, 0.0f, 0.0f};
 
-  AgentMemory mem;
+  AgentMemory mem{};
   agent_reset(mem);
   const AgentConfig cfg = agent_config_demon();
   int shots = 0;
@@ -206,7 +206,7 @@ TEST(demon_uses_movement_tech_to_exceed_walking_speed) {
   st->players[0].pos = {0.0f, 0.0f, -100.0f};
   st->players[1].pos = {0.0f, 0.0f, 100.0f};
 
-  AgentMemory mem;
+  AgentMemory mem{};
   agent_reset(mem);
   const AgentConfig cfg = agent_config_demon();
   float top = 0.0f;
@@ -232,4 +232,137 @@ TEST(demon_uses_movement_tech_to_exceed_walking_speed) {
   CHECK(top > GROUND_MAX_SPEED + 3.0f);
   // And it must hold that speed rather than touching it once.
   CHECK(ticks_above_walk > 60);
+}
+
+// The difficulty tiers are only real if they are strictly ordered: a ladder
+// where `easy` turns faster or aims straighter than `normal` is a slider that
+// lies. Every knob has to move the same way.
+TEST(skill_tiers_are_ordered_by_strength) {
+  const AgentConfig e = agent_config(SKILL_EASY);
+  const AgentConfig n = agent_config(SKILL_NORMAL);
+  const AgentConfig h = agent_config(SKILL_HARD);
+  const AgentConfig d = agent_config(SKILL_DEMON);
+  CHECK(e.turn_rate < n.turn_rate && n.turn_rate < h.turn_rate &&
+        h.turn_rate < d.turn_rate);
+  CHECK(e.reaction > n.reaction && n.reaction > h.reaction &&
+        h.reaction > d.reaction);
+  CHECK(e.aim_error > n.aim_error && n.aim_error > h.aim_error &&
+        h.aim_error > d.aim_error);
+  CHECK(e.fire_cone > n.fire_cone && n.fire_cone > h.fire_cone &&
+        h.fire_cone > d.fire_cone);
+  CHECK(e.fov < n.fov && n.fov < h.fov && h.fov < d.fov);
+  // Demon is the original bot kept as a fixed yardstick, not a fair opponent:
+  // it must still see all round and sweep its aim at the old rate.
+  CHECK_NEAR(d.fov, PI, 0.0001f);
+  CHECK_NEAR(d.turn_rate, 9.0f, 0.0001f);
+  // Every tier's firing cone has to stay wider than its aim wander. A bot
+  // whose error exceeds the cone aims off target and then declines to shoot,
+  // which reads as a bot that does not work rather than one that is bad.
+  CHECK(e.fire_cone > e.aim_error);
+  CHECK(n.fire_cone > n.aim_error);
+  CHECK(h.fire_cone > h.aim_error);
+  CHECK(d.fire_cone > d.aim_error);
+}
+
+// The tier names are the user-facing surface of the ladder (`--eval-a`,
+// `--bot-skill`), so they have to round-trip and reject junk cleanly.
+TEST(skill_names_round_trip_and_reject_junk) {
+  for (int i = 0; i < SKILL_COUNT; ++i) {
+    AgentSkill s = static_cast<AgentSkill>(i);
+    AgentSkill parsed = SKILL_COUNT;
+    CHECK(agent_skill_parse(agent_skill_name(s), &parsed));
+    CHECK_EQ_INT(parsed, static_cast<int>(s));
+  }
+  AgentSkill out = SKILL_DEMON;
+  CHECK(!agent_skill_parse("bogus", &out));
+  CHECK_EQ_INT(out, SKILL_DEMON);  // a failed parse must not corrupt the caller
+  CHECK(!agent_skill_parse(nullptr, &out));
+  CHECK(!agent_skill_parse("easy", nullptr));
+}
+
+// Drives one narrow-FOV tier at an enemy parked directly behind it, with clear
+// line of sight, and counts the ticks it fires. Facing is pinned every tick
+// because the question is what the bot can see from where it points now, not
+// where it would eventually turn.
+static void fire_at_enemy_behind(AgentSkill skill, int ticks, int* shots,
+                                 int* target) {
+  auto map = std::make_unique<Map>();
+  CHECK(map_parse(duel_map().c_str(), map.get()));
+  auto st = std::make_unique<GameState>();
+  Rng rng{0x9999ull};
+  game_init(*st, *map, 999);
+  game_player_join(*st, *map, "a");
+  game_player_join(*st, *map, "b");
+
+  AgentMemory mem{};
+  agent_reset(mem);
+  const AgentConfig cfg = agent_config(skill);
+  *shots = 0;
+  for (int t = 0; t < ticks; ++t) {
+    st->players[0].pos = {-14.0f, 0.0f, 0.0f};
+    st->players[0].yaw = 0.0f;                 // looking toward -Z
+    st->players[1].pos = {-14.0f, 0.0f, 4.0f};  // therefore behind, at +Z
+    PlayerInput in = agent_think(*st, *map, 0, AGENT_DEMON, cfg, mem, rng, TICK_DT);
+    if (in.buttons & BTN_FIRE) ++*shots;
+  }
+  *target = mem.target;
+}
+
+// Field of view is what makes the lower tiers flankable at all. With the enemy
+// directly behind and a clean line of sight, `easy` must never acquire or fire;
+// `demon`, which sees 360 degrees, must.
+TEST(fov_blinds_the_lower_tiers_from_behind) {
+  int easy_shots = 0;
+  int easy_target = -1;
+  fire_at_enemy_behind(SKILL_EASY, 60 * 3, &easy_shots, &easy_target);
+  CHECK_EQ_INT(easy_shots, 0);
+  CHECK_EQ_INT(easy_target, -1);
+
+  int demon_shots = 0;
+  int demon_target = -1;
+  fire_at_enemy_behind(SKILL_DEMON, 60 * 3, &demon_shots, &demon_target);
+  // Guard against a vacuous pass: the target has to be reachable and shootable
+  // for the easy result to distinguish anything.
+  CHECK_EQ_INT(demon_target, 1);
+  CHECK(demon_shots > 0);
+}
+
+// Being shot is information a human gets even when the shot came from outside
+// their view: they turn to look. If the bot does not model that, a narrow FOV
+// makes it free to flank rather than merely beatable.
+TEST(being_shot_pulls_the_bot_onto_an_out_of_view_enemy) {
+  auto map = std::make_unique<Map>();
+  CHECK(map_parse(duel_map().c_str(), map.get()));
+  auto st = std::make_unique<GameState>();
+  Rng rng{0x4242ull};
+  game_init(*st, *map, 999);
+  game_player_join(*st, *map, "a");
+  game_player_join(*st, *map, "b");
+  // No events from setup; the only one that will exist is the one we inject.
+  for (auto& ev : st->events) ev = GameEvent{};
+
+  AgentMemory mem{};
+  agent_reset(mem);
+  const AgentConfig cfg = agent_config(SKILL_EASY);
+
+  for (int t = 0; t < 30; ++t) {
+    st->players[0].pos = {-14.0f, 0.0f, 0.0f};
+    st->players[0].yaw = 0.0f;
+    st->players[1].pos = {-14.0f, 0.0f, 4.0f};
+    agent_think(*st, *map, 0, AGENT_DEMON, cfg, mem, rng, TICK_DT);
+  }
+  // Unprovoked, and behind: still unseen.
+  CHECK_EQ_INT(mem.target, -1);
+
+  // Player 1 shoots player 0 in the back.
+  st->events[0].id = 1;
+  st->events[0].type = EV_HIT;
+  st->events[0].a = 1;
+  st->events[0].b = 0;
+  st->players[0].pos = {-14.0f, 0.0f, 0.0f};
+  st->players[0].yaw = 0.0f;
+  st->players[1].pos = {-14.0f, 0.0f, 4.0f};
+  agent_think(*st, *map, 0, AGENT_DEMON, cfg, mem, rng, TICK_DT);
+  CHECK_EQ_INT(mem.provoked_by, 1);
+  CHECK_EQ_INT(mem.target, 1);
 }

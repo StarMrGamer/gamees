@@ -103,6 +103,7 @@ written down earlier, because machine state drifts more than most changes do.
 
 ```sh
 ./build/arena --eval --map maps/arena.txt --matches 40
+./build/arena --eval --eval-a hard --eval-b easy --matches 20
 ./build/arena --eval --eval-a demon --eval-b demon --handicap-b 0.5 --json
 ```
 
@@ -120,6 +121,21 @@ Two properties of the harness are worth knowing before reading its output:
 - **A timeout goes to whoever is ahead, not to a draw.** Only a dead-level frag
   count is a draw. Scoring timeouts as draws reported a 96-frag-to-minus-237
   thrashing on de_dust2 as an even result.
+
+`--eval-a` / `--eval-b` take `simple | easy | normal | hard | demon`. Measured
+on arena.txt, each tier against the fixed `simple` bot over 20 matches:
+
+| tier   | time to 15 frags | damage/shot |
+|--------|-----------------:|------------:|
+| easy   | 180 s (timeout)  | 0.20 |
+| normal | 173 s            | 0.26 |
+| hard   | 130 s            | 0.47 |
+| demon  |  85 s            | 0.78 |
+
+Head to head each tier beats the one below it 20-0, and a mirror match over 120
+matches lands inside the 95% band on 50% - which is the check that the harness
+is measuring the agents and not the spawns. At 20 matches a mirror can read
+6-14 purely on variance, so do not tune against a small sample.
 
 `--handicap-a` / `--handicap-b` (0 = full strength, 1 = worst) weaken the aim
 rate, reaction and accuracy. That is what turns a single opponent into a ladder,

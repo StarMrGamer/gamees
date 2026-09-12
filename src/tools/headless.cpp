@@ -220,8 +220,9 @@ std::string sim_report_json(const SimReport& r) {
 
 namespace {
 
-const char* agent_name(int kind) {
-  return kind == AGENT_DEMON ? "demon" : "simple";
+const char* agent_name(int kind, int skill) {
+  if (kind != AGENT_DEMON) return "simple";
+  return agent_skill_name(static_cast<AgentSkill>(skill));
 }
 
 }  // namespace
@@ -250,13 +251,17 @@ bool headless_eval(const char* map_path, int a_kind, int b_kind, const EvalOptio
   r.nav_built = r_nav_built;
   r.nav_nodes = r_nav_nodes;
   r.matches = opts.matches;
-  r.a_name = agent_name(a_kind);
-  r.b_name = agent_name(b_kind);
+  r.a_name = agent_name(a_kind, opts.skill_a);
+  r.b_name = agent_name(b_kind, opts.skill_b);
 
   auto state = std::make_unique<GameState>();
   std::vector<AgentMemory> mem(static_cast<size_t>(count));
-  const AgentConfig cfg_a = agent_config_demon_handicapped(opts.handicap_a);
-  const AgentConfig cfg_b = agent_config_demon_handicapped(opts.handicap_b);
+  // Skill picks the tier; handicap then scales within it, so a ladder can be
+  // built either coarsely or continuously.
+  AgentConfig cfg_a = agent_config(static_cast<AgentSkill>(opts.skill_a));
+  AgentConfig cfg_b = agent_config(static_cast<AgentSkill>(opts.skill_b));
+  if (opts.handicap_a > 0.0f) cfg_a = agent_config_demon_handicapped(opts.handicap_a);
+  if (opts.handicap_b > 0.0f) cfg_b = agent_config_demon_handicapped(opts.handicap_b);
 
   long long total_ticks = 0;
   auto t0 = std::chrono::steady_clock::now();

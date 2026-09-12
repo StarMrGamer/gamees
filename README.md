@@ -27,7 +27,22 @@ not on `PATH`, install it or place the contract-approved CMake release at
 ./build/arena --connect 127.0.0.1:27950 --name player2 --jump mwheelup --doublejump space
 ./build/arena --dedicated --port 27950
 ./build/arena --bot 127.0.0.1:27950 --name bot1
+./build/arena --bot 127.0.0.1:27950 --name bot1 --bot-skill hard
 ```
+
+The bot has four difficulty tiers: **easy, normal, hard** and **demon**. Each
+turns faster, reacts sooner, aims straighter and sees further round than the one
+below it, so lower tiers can be flanked and higher ones punish you for standing
+still. `--bot-skill` picks the tier and defaults to `normal`; `demon` is the
+original, all-seeing bot kept as a fixed yardstick rather than a fair opponent.
+
+Bot difficulty is `--bot-skill easy|normal|hard|demon`, defaulting to `normal`.
+**`demon` is not a fair opponent** - it has a 360-degree field of view and
+sweeps its aim at 515 deg/s - it exists as a fixed yardstick to measure
+against. The playable tiers have a real field of view (120-160 degrees), so
+they can be flanked, and human-plausible reaction times (0.45 / 0.30 / 0.22 s
+against a human's ~0.25 s). Being shot still turns a bot round, whichever
+direction it came from.
 
 The bot plays properly: it picks targets it can actually see, leads rockets,
 circles while it shoots, closes to shotgun range or holds rifle range depending

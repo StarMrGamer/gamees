@@ -86,6 +86,8 @@ struct EvalOptions {
   uint64_t seed = 9001;
   float handicap_a = 0.0f;   // 0 = full strength, 1 = maximally handicapped
   float handicap_b = 0.0f;
+  int skill_a = 3;           // AgentSkill; 3 = SKILL_DEMON
+  int skill_b = 3;
 };
 
 struct EvalSideStats {
