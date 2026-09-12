@@ -94,6 +94,12 @@ Two properties that are load-bearing and easy to break:
 Measured: de_dust2 is 1712 nodes / 6770 links, built in 121 ms, and A* over it
 costs ~10 us. Turning it on took the bot from 6.2 to 11.2 frags per match there.
 
+Bots added with `--bots N` are **threads of the client process**, so quitting
+the game takes them with it. A bot launched as its own background process
+outlives the session that started it: it keeps playing against a server that has
+gone, and the next game finds strangers already in it. Standalone `--bot`
+therefore also gives up ten seconds after its server stops answering.
+
 `AGENT_SIMPLE` is the original hold-forward-and-spray bot. Do not delete it - it
 is the floor every later claim is measured against.
 

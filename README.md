@@ -26,9 +26,16 @@ not on `PATH`, install it or place the contract-approved CMake release at
 ./build/arena --connect 192.168.1.42:27950 --name player2 --class scout --jump mwheelup
 ./build/arena --connect 127.0.0.1:27950 --name player2 --jump mwheelup --doublejump space
 ./build/arena --dedicated --port 27950
+./build/arena --host --bots 3 --bot-skill normal
 ./build/arena --bot 127.0.0.1:27950 --name bot1
 ./build/arena --bot 127.0.0.1:27950 --name bot1 --bot-skill hard
 ```
+
+**`--bots N` is the way to play against them.** The bots run as threads of your
+own game, so closing it is guaranteed to take them with it. Launching `--bot` as
+a separate background process works too, but that bot outlives the window that
+spawned it and turns up in your next session - it now gives up and exits ten
+seconds after its server stops answering, rather than lingering forever.
 
 The bot has four difficulty tiers: **easy, normal, hard** and **demon**. Each
 turns faster, reacts sooner, aims straighter and sees further round than the one
