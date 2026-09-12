@@ -99,6 +99,45 @@ Numbers are noisy on a busy machine - take the best of several runs, and
 compare against a build of the previous commit rather than against a figure
 written down earlier, because machine state drifts more than most changes do.
 
+## `--eval` - bot against bot, headlessly
+
+```sh
+./build/arena --eval --map maps/arena.txt --matches 40
+./build/arena --eval --eval-a demon --eval-b demon --handicap-b 0.5 --json
+```
+
+Plays whole matches with each side driven by an agent from `src/ai/agent.h` and
+reports who won. This is the scoreboard: "the new bot feels better" is not a
+claim, "it wins 40 of 40" is. Runs at roughly 10000x realtime, so a 40-match
+verdict takes a couple of seconds.
+
+Two properties of the harness are worth knowing before reading its output:
+
+- **Sides swap every other match.** A map's spawn layout can hand one seat an
+  advantage that looks exactly like skill. The check that this works is
+  `--eval-a demon --eval-b demon --handicap-b 0`, a mirror match, which comes
+  out 50/50.
+- **A timeout goes to whoever is ahead, not to a draw.** Only a dead-level frag
+  count is a draw. Scoring timeouts as draws reported a 96-frag-to-minus-237
+  thrashing on de_dust2 as an even result.
+
+`--handicap-a` / `--handicap-b` (0 = full strength, 1 = worst) weaken the aim
+rate, reaction and accuracy. That is what turns a single opponent into a ladder,
+which is how a learned policy gets a position rather than a pass/fail.
+
+Current standing, `demon` vs the original `simple` bot:
+
+| map       | result | demon frags | simple frags | demon deaths |
+|-----------|--------|------------:|-------------:|-------------:|
+| arena     | 40 - 0 |         600 |          -65 |            0 |
+| de_dust2  | 30 - 0 |          71 |         -235 |            2 |
+
+**Known limit: there is no pathfinding.** The bot steers toward its target and
+avoids what it can see locally. That is enough on `arena`, where matches reach
+the frag limit; on de_dust2 (167 x 140 m) the matches run out of clock instead,
+so the win is on differential rather than on reaching the limit. Fixing that
+means a navmesh, not a better steering heuristic.
+
 ## `--check-map` - map validation
 
 ```sh

@@ -75,6 +75,47 @@ bool headless_netcheck(const char* map_path, const NetCheckOptions& opts, NetChe
 
 std::string netcheck_report_json(const NetCheckReport& r);
 
+// Bot-vs-bot evaluation. Runs whole matches headlessly with each side driven
+// by an AgentKind, and reports who won. This is the scoreboard: "the new bot
+// feels better" is not a claim, "it wins 98.4% of 400 matches" is.
+struct EvalOptions {
+  int matches = 100;
+  int per_side = 1;          // bots per side (1 = duel)
+  int frag_limit = 15;
+  int max_ticks = 60 * 180;  // give up on a match after three minutes
+  uint64_t seed = 9001;
+  float handicap_a = 0.0f;   // 0 = full strength, 1 = maximally handicapped
+  float handicap_b = 0.0f;
+};
+
+struct EvalSideStats {
+  int wins = 0;
+  int frags = 0;
+  int deaths = 0;
+  int shots = 0;
+  int void_falls = 0;        // walked or fell out of the world
+  double damage_dealt = 0.0;
+};
+
+struct EvalReport {
+  int matches = 0;
+  int draws = 0;             // finished dead level on frags
+  EvalSideStats a, b;
+  const char* a_name = "";
+  const char* b_name = "";
+  double avg_match_seconds = 0.0;
+  double ticks_per_second = 0.0;
+  bool nan_seen = false;
+};
+
+// `a_kind`/`b_kind` are AgentKind values (see ai/agent.h); taken as int here so
+// this header does not drag the AI in.
+bool headless_eval(const char* map_path, int a_kind, int b_kind, const EvalOptions& opts,
+                   EvalReport* out, std::string* error);
+
+std::string eval_report_json(const EvalReport& r);
+std::string eval_report_text(const EvalReport& r);
+
 // Answers "what does the engine think is at this spot?" for a single position -
 // the counterpart to the client's P key, which copies a position to the
 // clipboard in exactly the format --probe accepts.

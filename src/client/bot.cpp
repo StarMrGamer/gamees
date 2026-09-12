@@ -1,11 +1,14 @@
 #include "client/bot.h"
 
+#include "ai/agent.h"
 #include "client/client.h"
+#include "core/rng.h"
 #include "game/game_state.h"
 #include "game/tuning.h"
 
 #include <chrono>
 #include <cmath>
+#include <memory>
 #include <thread>
 
 static double bot_now() {
@@ -15,21 +18,44 @@ static double bot_now() {
 }
 
 int bot_main(NetAddress server, const char* name, int lifetime_seconds) {
-  Client c{};
+  auto client = std::make_unique<Client>();
+  Client& c = *client;
   if (!client_start(c, server, name ? name : "bot")) return 1;
+
+  auto view = std::make_unique<GameState>();
+  AgentMemory mem;
+  agent_reset(mem);
+  const AgentConfig cfg = agent_config_demon();
+  Rng rng{0x1234abcdull ^ static_cast<uint64_t>(server.port)};
+
   double start = bot_now();
+  double last = start;
+  uint32_t sequence = 0;
   while (lifetime_seconds <= 0 || bot_now() - start < lifetime_seconds) {
     double now = bot_now();
+    float dt = static_cast<float>(now - last);
+    last = now;
+    if (dt > 0.25f) dt = 0.25f;  // a stall must not teleport the bot's timers
+
     ClientEvents events{};
     client_receive(c, now, &events);
+
     PlayerInput in{};
-    in.buttons = BTN_FORWARD | BTN_FIRE;
-    if (static_cast<int>(now) % 4 == 0) in.buttons |= BTN_JUMP;
-    if (static_cast<int>(now) % 7 == 0) in.buttons |= BTN_DASH;
-    in.weapon_switch = static_cast<int>(now) % 5 == 0 ? 2 : 1;
-    in.yaw = std::sin(static_cast<float>(now) * 0.7f) * PI;
-    in.pitch = 0.0f;
+    // The agent needs a world to reason about. That is exactly what the
+    // client's prediction map plus its interpolated view provide, so a network
+    // bot thinks from the same picture a human player is looking at - and
+    // falls back to walking forward if the server's map is not available
+    // locally, which is the same condition that disables prediction.
+    if (c.prediction_ready && c.player_index >= 0 && c.player_index < MAX_PLAYERS) {
+      client_view_state(c, view.get());
+      in = agent_think(*view, c.prediction_map, c.player_index, AGENT_DEMON, cfg, mem, rng, dt);
+    } else {
+      in.buttons = BTN_FORWARD;
+      in.yaw = std::sin(static_cast<float>(now) * 0.7f) * PI;
+    }
+    in.sequence = ++sequence;
     client_send_input(c, in);
+
     std::this_thread::sleep_for(std::chrono::milliseconds(16));
   }
   client_disconnect(c);

@@ -1,5 +1,6 @@
 #include "tools/headless.h"
 
+#include "ai/agent.h"
 #include "client/client.h"
 #include "core/rng.h"
 #include "game/collision.h"
@@ -216,6 +217,189 @@ std::string sim_report_json(const SimReport& r) {
 // ---------------------------------------------------------------------------
 // Network round-trip check
 // ---------------------------------------------------------------------------
+
+namespace {
+
+const char* agent_name(int kind) {
+  return kind == AGENT_DEMON ? "demon" : "simple";
+}
+
+}  // namespace
+
+bool headless_eval(const char* map_path, int a_kind, int b_kind, const EvalOptions& opts,
+                   EvalReport* out, std::string* error) {
+  if (!out) return false;
+  auto map_storage = std::make_unique<Map>();
+  Map& map = *map_storage;
+  if (!map_load(map_path, &map)) {
+    if (error) *error = std::string("failed to load map '") + (map_path ? map_path : "") + "'";
+    return false;
+  }
+  int per_side = opts.per_side < 1 ? 1 : opts.per_side;
+  if (per_side * 2 > MAX_PLAYERS) per_side = MAX_PLAYERS / 2;
+  const int count = per_side * 2;
+
+  EvalReport r;
+  r.matches = opts.matches;
+  r.a_name = agent_name(a_kind);
+  r.b_name = agent_name(b_kind);
+
+  auto state = std::make_unique<GameState>();
+  std::vector<AgentMemory> mem(static_cast<size_t>(count));
+  const AgentConfig cfg_a = agent_config_demon_handicapped(opts.handicap_a);
+  const AgentConfig cfg_b = agent_config_demon_handicapped(opts.handicap_b);
+
+  long long total_ticks = 0;
+  auto t0 = std::chrono::steady_clock::now();
+
+  for (int match = 0; match < opts.matches; ++match) {
+    // Sides swap every other match so a map's spawn layout cannot hand one
+    // agent an advantage that looks like skill.
+    const bool swapped = (match & 1) != 0;
+    Rng rng{opts.seed + static_cast<uint64_t>(match) * 7919ull};
+    game_init(*state, map, opts.frag_limit);
+    for (int i = 0; i < count; ++i) {
+      char name[16];
+      std::snprintf(name, sizeof(name), "%c%d", i < per_side ? 'a' : 'b', i);
+      game_player_join(*state, map, name);
+      agent_reset(mem[static_cast<size_t>(i)]);
+    }
+
+    auto side_of = [&](int i) { return i < per_side ? 0 : 1; };
+    auto kind_of = [&](int i) {
+      int side = side_of(i);
+      if (swapped) side = 1 - side;
+      return side == 0 ? a_kind : b_kind;
+    };
+    auto cfg_of = [&](int i) -> const AgentConfig& {
+      int side = side_of(i);
+      if (swapped) side = 1 - side;
+      return side == 0 ? cfg_a : cfg_b;
+    };
+
+    int frags[2] = {0, 0};
+    int deaths[2] = {0, 0};
+    int shots[2] = {0, 0};
+    int void_falls[2] = {0, 0};
+    float prev_health[MAX_PLAYERS];
+    bool prev_alive[MAX_PLAYERS];
+    bool prev_in_void[MAX_PLAYERS];
+    for (int i = 0; i < count; ++i) {
+      prev_health[i] = state->players[i].health;
+      prev_alive[i] = state->players[i].alive;
+      prev_in_void[i] = false;
+    }
+    double damage[2] = {0.0, 0.0};
+    int tick = 0;
+    bool decided = false;
+
+    for (; tick < opts.max_ticks; ++tick) {
+      PlayerInput inputs[MAX_PLAYERS]{};
+      for (int i = 0; i < count; ++i) {
+        inputs[i] = agent_think(*state, map, i, static_cast<AgentKind>(kind_of(i)), cfg_of(i),
+                                mem[static_cast<size_t>(i)], rng, TICK_DT);
+        inputs[i].sequence = static_cast<uint32_t>(tick + 1);
+        if (inputs[i].buttons & BTN_FIRE) ++shots[side_of(i)];
+      }
+      game_tick(*state, map, inputs, rng);
+      ++total_ticks;
+
+      for (int i = 0; i < count; ++i) {
+        const Player& p = state->players[i];
+        if (!std::isfinite(p.pos.x) || !std::isfinite(p.pos.y) || !std::isfinite(p.pos.z)) {
+          r.nan_seen = true;
+        }
+        // Falling out is counted per event, not per tick: the void plane
+        // teleports the player back, so a single fall would otherwise be
+        // scored dozens of times on the way down.
+        bool in_void = p.pos.y < map.void_y + 0.5f;
+        if (in_void && !prev_in_void[i]) ++void_falls[side_of(i)];
+        prev_in_void[i] = in_void;
+
+        // Deaths are alive->dead transitions. Frags do not cover it: a bot that
+        // walks into the void dies without anyone scoring.
+        if (prev_alive[i] && !p.alive) ++deaths[side_of(i)];
+        prev_alive[i] = p.alive;
+
+        // Damage is credited to the other side. Self-inflicted splash is
+        // misattributed by this, which is worth remembering before reading too
+        // much into the column.
+        if (p.health < prev_health[i] && p.alive) damage[1 - side_of(i)] += prev_health[i] - p.health;
+        prev_health[i] = p.health;
+      }
+
+      // Team score is the sum of its members' frags.
+      int score[2] = {0, 0};
+      for (int i = 0; i < count; ++i) score[side_of(i)] += state->players[i].frags;
+      frags[0] = score[0];
+      frags[1] = score[1];
+      if (state->match_over || score[0] >= opts.frag_limit || score[1] >= opts.frag_limit) {
+        decided = true;
+        break;
+      }
+    }
+
+    // Map team slots back to agents, undoing the swap.
+    int agent_of_side[2] = {swapped ? 1 : 0, swapped ? 0 : 1};
+    EvalSideStats* stats[2] = {&r.a, &r.b};
+    for (int side = 0; side < 2; ++side) {
+      EvalSideStats& st = *stats[agent_of_side[side]];
+      st.frags += frags[side];
+      st.deaths += deaths[side];
+      st.shots += shots[side];
+      st.void_falls += void_falls[side];
+      st.damage_dealt += damage[side];
+    }
+    // A match that runs out of clock is not a draw - it goes to whoever was
+    // ahead, as it would in any real ruleset. Scoring timeouts as draws
+    // reported 96 frags against -227 as an even result.
+    (void)decided;
+    if (frags[0] == frags[1]) {
+      ++r.draws;
+    } else {
+      int winner = frags[0] > frags[1] ? 0 : 1;
+      ++stats[agent_of_side[winner]]->wins;
+    }
+    r.avg_match_seconds += static_cast<double>(tick) * TICK_DT;
+  }
+
+  double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  if (opts.matches > 0) r.avg_match_seconds /= opts.matches;
+  r.ticks_per_second = secs > 0.0 ? static_cast<double>(total_ticks) / secs : 0.0;
+  *out = r;
+  return true;
+}
+
+std::string eval_report_json(const EvalReport& r) {
+  char buf[768];
+  std::snprintf(buf, sizeof(buf),
+                "{\"matches\":%d,\"draws\":%d,\"a\":{\"name\":\"%s\",\"wins\":%d,"
+                "\"frags\":%d,\"deaths\":%d,\"shots\":%d,\"void_falls\":%d,\"damage\":%.0f},"
+                "\"b\":{\"name\":\"%s\",\"wins\":%d,\"frags\":%d,\"deaths\":%d,\"shots\":%d,"
+                "\"void_falls\":%d,\"damage\":%.0f},"
+                "\"avg_match_seconds\":%.1f,\"ticks_per_second\":%.0f,\"nan\":%s}",
+                r.matches, r.draws, r.a_name, r.a.wins, r.a.frags, r.a.deaths, r.a.shots,
+                r.a.void_falls, r.a.damage_dealt, r.b_name, r.b.wins, r.b.frags, r.b.deaths,
+                r.b.shots, r.b.void_falls, r.b.damage_dealt, r.avg_match_seconds, r.ticks_per_second,
+                r.nan_seen ? "true" : "false");
+  return buf;
+}
+
+std::string eval_report_text(const EvalReport& r) {
+  char buf[1024];
+  double decided = static_cast<double>(r.matches - r.draws);
+  double win_a = decided > 0 ? 100.0 * r.a.wins / decided : 0.0;
+  std::snprintf(buf, sizeof(buf),
+                "%d matches: %s %d - %d %s (%d draws)\n"
+                "  %-7s win %5.1f%%  frags %5d  deaths %5d  damage %8.0f  shots %6d  fell out %d\n"
+                "  %-7s win %5.1f%%  frags %5d  deaths %5d  damage %8.0f  shots %6d  fell out %d\n"
+                "  average match %.1f s, %.0f sim ticks/s (%.0fx realtime)",
+                r.matches, r.a_name, r.a.wins, r.b.wins, r.b_name, r.draws,
+                r.a_name, win_a, r.a.frags, r.a.deaths, r.a.damage_dealt, r.a.shots, r.a.void_falls,
+                r.b_name, 100.0 - win_a, r.b.frags, r.b.deaths, r.b.damage_dealt, r.b.shots, r.b.void_falls,
+                r.avg_match_seconds, r.ticks_per_second, r.ticks_per_second / TICK_RATE);
+  return buf;
+}
 
 bool headless_netcheck(const char* map_path, const NetCheckOptions& opts, NetCheckReport* out,
                        std::string* error) {

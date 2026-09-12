@@ -13,6 +13,7 @@
 #include "platform/socket.h"
 #include "server/dedicated.h"
 #include "tools/bench.h"
+#include "ai/agent.h"
 #include "tools/headless.h"
 #include "tools/map_import.h"
 
@@ -23,6 +24,15 @@
 #include <memory>
 #include <string>
 #include <vector>
+
+// Agent names for --eval-a / --eval-b. Kept beside the flag parser for the same
+// reason as print_usage(): a name that parses but is not listed is a trap.
+static int parse_agent(const char* name) {
+  if (std::strcmp(name, "simple") == 0) return AGENT_SIMPLE;
+  if (std::strcmp(name, "demon") == 0) return AGENT_DEMON;
+  fatal_error("unknown agent, expected 'simple' or 'demon'");
+  return AGENT_SIMPLE;
+}
 
 enum RunMode {
   MODE_MENU,
@@ -36,6 +46,7 @@ enum RunMode {
   MODE_BENCH,
   MODE_NETCHECK,
   MODE_PROBE,
+  MODE_EVAL,
   MODE_HELP,
 };
 
@@ -57,6 +68,7 @@ static void print_usage() {
       "  arena --simulate               run the sim with scripted inputs, print a report\n"
       "  arena --bench                  microbenchmark the simulation hot paths\n"
       "  arena --netcheck               run server + clients over loopback, check the round trip\n"
+      "  arena --eval                   play bot against bot headlessly, report who wins\n"
       "  arena --check-map FILE         verify a map is sealed against the void\n"
       "  arena --probe \"X Y Z\"         report what the engine sees at a position\n"
       "                                 (the client's P key copies this format)\n"
@@ -72,6 +84,9 @@ static void print_usage() {
       "  --vsync / --no-vsync           swap interval (default off)\n"
       "  --ticks N, --players N         --simulate length and player count\n"
       "  --seconds N                    --netcheck duration\n"
+      "  --matches N                    --eval match count (default 100)\n"
+      "  --eval-a NAME, --eval-b NAME   agents to pit: simple | demon (default demon vs simple)\n"
+      "  --handicap-a F, --handicap-b F 0 = full strength, 1 = maximally handicapped\n"
       "  --seed N, --trace-every N      --simulate determinism seed and trace sampling\n"
       "  --json                         machine-readable output for tool modes\n"
       "  --import-out FILE, --import-scale F, --import-max-boxes N\n"
@@ -164,6 +179,12 @@ int main(int argc, char** argv) {
   int import_max_boxes = 0;
   bool json_output = false;
   SimOptions sim_options;
+  EvalOptions eval_options;
+  int eval_a = AGENT_DEMON;
+  int eval_b = AGENT_SIMPLE;
+  // --simulate defaults to four players; --eval defaults to a duel. Without
+  // this the evaluator would quietly run 2v2 and report it as a duel.
+  bool players_set = false;
   NetCheckOptions netcheck_options;
   Vec3 probe_pos{};
   uint16_t port = DEFAULT_PORT;
@@ -195,6 +216,20 @@ int main(int argc, char** argv) {
           std::sscanf(text, "%f,%f,%f", &probe_pos.x, &probe_pos.y, &probe_pos.z) != 3) {
         fatal_error("invalid --probe, expected \"x y z\"");
       }
+    } else if (std::strcmp(argv[i], "--eval") == 0) {
+      mode = MODE_EVAL;
+    } else if (std::strcmp(argv[i], "--matches") == 0 && i + 1 < argc) {
+      int value = std::atoi(argv[++i]);
+      if (value <= 0) fatal_error("invalid --matches");
+      eval_options.matches = value;
+    } else if (std::strcmp(argv[i], "--eval-a") == 0 && i + 1 < argc) {
+      eval_a = parse_agent(argv[++i]);
+    } else if (std::strcmp(argv[i], "--eval-b") == 0 && i + 1 < argc) {
+      eval_b = parse_agent(argv[++i]);
+    } else if (std::strcmp(argv[i], "--handicap-a") == 0 && i + 1 < argc) {
+      eval_options.handicap_a = static_cast<float>(std::atof(argv[++i]));
+    } else if (std::strcmp(argv[i], "--handicap-b") == 0 && i + 1 < argc) {
+      eval_options.handicap_b = static_cast<float>(std::atof(argv[++i]));
     } else if (std::strcmp(argv[i], "--netcheck") == 0) {
       mode = MODE_NETCHECK;
     } else if (std::strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
@@ -211,6 +246,7 @@ int main(int argc, char** argv) {
       int value = std::atoi(argv[++i]);
       if (value <= 0 || value > MAX_PLAYERS) fatal_error("invalid --players");
       sim_options.players = value;
+      players_set = true;
     } else if (std::strcmp(argv[i], "--seed") == 0 && i + 1 < argc) {
       sim_options.seed = std::strtoull(argv[++i], nullptr, 10);
     } else if (std::strcmp(argv[i], "--trace-every") == 0 && i + 1 < argc) {
@@ -351,6 +387,28 @@ int main(int argc, char** argv) {
     }
     if (!report.ok) {
       log_error("netcheck failed: %s", report.failure.c_str());
+      return 1;
+    }
+    return 0;
+  }
+
+  if (mode == MODE_EVAL) {
+    eval_options.per_side = players_set && sim_options.players > 2 ? sim_options.players / 2 : 1;
+    eval_options.seed = sim_options.seed;
+    EvalReport report;
+    std::string error;
+    if (!headless_eval(map_path, eval_a, eval_b, eval_options, &report, &error)) {
+      log_error("%s", error.c_str());
+      return 1;
+    }
+    if (json_output) {
+      std::printf("%s\n", eval_report_json(report).c_str());
+    } else {
+      log_info("evaluation on '%s'", map_path);
+      std::printf("%s\n", eval_report_text(report).c_str());
+    }
+    if (report.nan_seen) {
+      log_error("a player position went non-finite during evaluation");
       return 1;
     }
     return 0;

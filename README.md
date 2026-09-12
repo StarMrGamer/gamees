@@ -29,6 +29,11 @@ not on `PATH`, install it or place the contract-approved CMake release at
 ./build/arena --bot 127.0.0.1:27950 --name bot1
 ```
 
+The bot plays properly: it picks targets it can actually see, leads rockets,
+circles while it shoots, closes to shotgun range or holds rifle range depending
+on its class, bunny hops, goes for health when hurt, and does not walk off the
+map. It beats the old spin-and-spray bot 40 matches to 0.
+
 Maps are looked up relative to the current working directory and, failing
 that, relative to the executable (and up to three parent directories), so the
 binary can be launched from anywhere — including a `dist/` folder or the
@@ -119,6 +124,8 @@ other:
 - `ramp x y z w h d dir r g b` is a first-class map primitive: a wedge whose
   top slopes from `y` to `y+h` along `dir`, walkable like a real slope (used by
   the importer instead of stair-steps).
+- `./build/arena --eval --map maps/arena.txt --matches 40` plays bot against bot
+  headlessly and reports who won, at around 10000x realtime.
 - `./build/arena --check-map maps/<name>.txt` voxelises the map and checks that
   no spawn is reachable from outside through a gap in the walls, printing the
   first leak if one is found.

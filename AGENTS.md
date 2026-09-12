@@ -61,6 +61,34 @@ All of them exit non-zero on failure. Two things worth knowing:
   meant to use, and the reachable-position metric is too coarse to notice.
   `docs/AGENT_TOOLING.md` has the full account.
 
+## Bots
+
+`src/ai/agent.h` turns a `GameState` into a `PlayerInput` and nothing else - no
+sockets, no rendering, no wall clock. That is deliberate: the same code drives
+the networked `--bot`, the headless `--eval` harness, and (later) the
+demonstrations a learned policy trains against. Keep it that way, or those three
+stop agreeing about what the bot does.
+
+`AGENT_SIMPLE` is the original hold-forward-and-spray bot. Do not delete it - it
+is the floor every later claim is measured against.
+
+The bot is **omniscient for navigation and blind for aiming**: with nobody in
+sight it walks toward the nearest living enemy, but firing still requires a real
+line-of-sight raycast. The split is deliberate and worth preserving. Without the
+navigation half, two bots on de_dust2 never meet and 30 of 30 matches time out;
+without the aiming half, it is a wallhack and useless as a training opponent.
+
+Two things learned the hard way while tuning the steering, both measured:
+
+- **Walls and pits are not the same constraint.** Running into a wall is
+  harmless - the collision code slides you along it - so openness is only a
+  preference. Walking off the map is not recoverable, so footing is the only
+  hard veto. Treating both as hard vetoes made every direction illegal in
+  de_dust2's corridors and cost 78% of the bot's frags.
+- **Look-ahead has to scale with speed.** The bot bunny hops; a fixed 1.6 m
+  probe is a tenth of a second of warning at 12 m/s. Scaling it took falls out
+  of the world from 16 per 30 matches to 0.
+
 ## Performance notes
 
 `Map` carries a uniform XZ grid (`MapGrid`) built at load time, and

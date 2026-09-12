@@ -18,6 +18,7 @@ if(NOT SDL3_FOUND)
 endif()
 
 set(ARENA_SOURCES
+  src/ai/agent.cpp
   src/audio/mixer.cpp
   src/audio/synth.cpp
   src/client/bot.cpp
@@ -55,6 +56,7 @@ target_include_directories(arena PRIVATE src)
 target_link_libraries(arena PRIVATE SDL3::SDL3)
 
 add_executable(arena_tests
+  tests/test_agent.cpp
   tests/test_client.cpp
   tests/test_brush.cpp
   tests/test_collision.cpp

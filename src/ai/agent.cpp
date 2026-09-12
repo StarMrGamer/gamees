@@ -1,0 +1,422 @@
+#include "ai/agent.h"
+
+#include "game/collision.h"
+#include "game/tuning.h"
+#include "game/weapons.h"
+
+#include <cmath>
+
+namespace {
+
+// Where to aim on a body. The feet are the worst choice (a shot at the feet
+// misses whenever the target steps up), so everything targets the centre.
+Vec3 body_center(const Player& p) {
+  float h = p.crouching ? PLAYER_CROUCH_HEIGHT : PLAYER_HEIGHT;
+  return p.pos + Vec3{0.0f, h * 0.5f, 0.0f};
+}
+
+bool can_see(const GameState& s, const Map& map, int from, Vec3 to) {
+  Vec3 eye = player_eye_pos(s.players[from]);
+  Vec3 d = to - eye;
+  float dist = vec3_length(d);
+  if (dist < 0.01f) return true;
+  return ray_map(map, eye, d / dist, dist) >= dist - 0.15f;
+}
+
+// The preferred engagement range for the weapon in hand. The shotgun's damage
+// falls off past SHOTGUN_FALLOFF_START, so a Scout that fights at rifle range
+// is throwing away most of its damage; the rifle conversely has no reason to
+// close and every reason not to.
+float preferred_range(uint8_t weapon) {
+  switch (weapon) {
+    case WEAPON_SHOTGUN: return 5.0f;
+    case WEAPON_LMG: return 13.0f;
+    case WEAPON_ROCKET: return 16.0f;
+    default: return 18.0f;
+  }
+}
+
+float weapon_reach(uint8_t weapon) {
+  switch (weapon) {
+    case WEAPON_SHOTGUN: return SHOTGUN_FALLOFF_END;
+    case WEAPON_LMG: return LMG_RANGE;
+    case WEAPON_ROCKET: return 45.0f;
+    default: return RIFLE_RANGE;
+  }
+}
+
+// Is there still floor ahead along `dir`? de_dust2 has 191 places where the
+// level's seal is genuinely absent, and a bot that walks off one hands over the
+// tempo if not the frag. Probing beats trusting the map.
+//
+// The distance scales with speed because the bot bunny hops: at 12 m/s a fixed
+// one-metre probe is a tenth of a second of warning, which it cannot act on.
+bool footing_ahead(const Map& map, Vec3 pos, Vec3 vel, Vec3 dir) {
+  float speed = std::sqrt(vel.x * vel.x + vel.z * vel.z);
+  float lookahead = speed * 0.35f;
+  if (lookahead < 1.4f) lookahead = 1.4f;
+  if (lookahead > 3.5f) lookahead = 3.5f;
+  // Check a couple of points along the way, not just the far end: a gap
+  // narrower than the probe distance would otherwise be stepped straight over.
+  const float max_drop = 6.0f;  // survivable; only a real pit should veto
+  for (int i = 1; i <= 2; ++i) {
+    Vec3 probe = pos + dir * (lookahead * static_cast<float>(i) * 0.5f);
+    probe.y += 0.5f;
+    if (ray_map(map, probe, {0.0f, -1.0f, 0.0f}, max_drop + 0.5f) > max_drop) return false;
+  }
+  return true;
+}
+
+// Is the way ahead open at chest height? Steering straight at a target on
+// de_dust2 walks into a wall and stays there; this is what lets the bot slide
+// around one instead.
+bool wall_clear(const Map& map, Vec3 pos, Vec3 dir, float reach) {
+  Vec3 chest = pos + Vec3{0.0f, PLAYER_HEIGHT * 0.55f, 0.0f};
+  return ray_map(map, chest, dir, reach) >= reach;
+}
+
+// Picks a heading near `desired` to actually walk.
+//
+// The two constraints are not equal and treating them as if they were cost 78%
+// of the bot's frags. Running into a wall is harmless - the collision code
+// slides you along it - so openness is only a preference. Walking off the map
+// is not recoverable, so footing is the one hard veto. Requiring both made
+// every direction illegal in de_dust2's corridors and the bot simply stopped.
+Vec3 steer(const Map& map, Vec3 pos, Vec3 vel, Vec3 desired, float bias) {
+  if (vec3_length(desired) < 0.001f) return {0.0f, 0.0f, 0.0f};
+  desired = vec3_normalize(desired);
+  // Straight ahead is the common case; taking it early skips a fan of twenty
+  // raycasts and is worth 3x on evaluation throughput.
+  if (footing_ahead(map, pos, vel, desired) && wall_clear(map, pos, desired, 2.0f)) {
+    return desired;
+  }
+  const float fan[] = {0.0f, 0.4f, 0.8f, 1.2f, 1.6f, 2.1f, 2.6f};
+  Vec3 best{0.0f, 0.0f, 0.0f};
+  float best_score = -1e30f;
+  for (float offset : fan) {
+    for (int side = 0; side < 2; ++side) {
+      if (offset == 0.0f && side == 1) continue;
+      float a = offset * (side == 0 ? bias : -bias);
+      float c = std::cos(a), sn = std::sin(a);
+      Vec3 cand{desired.x * c - desired.z * sn, 0.0f, desired.x * sn + desired.z * c};
+      if (!footing_ahead(map, pos, vel, cand)) continue;
+      const float probe = 3.0f;
+      float open = ray_map(map, pos + Vec3{0.0f, PLAYER_HEIGHT * 0.55f, 0.0f}, cand, probe);
+      // Staying on course is worth more than open space, so the bot only
+      // swings wide when it is genuinely blocked.
+      float score = open + std::cos(a) * 4.0f;
+      if (score > best_score) {
+        best_score = score;
+        best = cand;
+      }
+    }
+  }
+  return best;
+}
+
+void aim_at(AgentMemory& m, Vec3 from, Vec3 to, float turn_rate, float dt) {
+  Vec3 d = to - from;
+  float flat = std::sqrt(d.x * d.x + d.z * d.z);
+  float want_yaw = std::atan2(d.x, -d.z);
+  float want_pitch = std::atan2(d.y, flat > 0.001f ? flat : 0.001f);
+  if (!m.aim_init) {
+    m.aim_yaw = want_yaw;
+    m.aim_pitch = want_pitch;
+    m.aim_init = true;
+    return;
+  }
+  // Sweep toward the target at a bounded rate rather than snapping. The cap is
+  // the whole difficulty dial: an uncapped bot is an aimbot and teaches a
+  // learned policy nothing except that it cannot win.
+  float dyaw = angle_wrap(want_yaw - m.aim_yaw);
+  float dpitch = want_pitch - m.aim_pitch;
+  float step = turn_rate * dt;
+  float mag = std::sqrt(dyaw * dyaw + dpitch * dpitch);
+  if (mag > step && mag > 0.0f) {
+    dyaw *= step / mag;
+    dpitch *= step / mag;
+  }
+  m.aim_yaw = angle_wrap(m.aim_yaw + dyaw);
+  m.aim_pitch = clampf(m.aim_pitch + dpitch, -1.5f, 1.5f);
+}
+
+// Turns a world-space heading into the four movement bits, relative to where
+// the bot is looking.
+uint16_t move_buttons(Vec3 move, float yaw) {
+  if (vec3_length(move) < 0.001f) return 0;
+  move = vec3_normalize(move);
+  Vec3 fwd{std::sin(yaw), 0.0f, -std::cos(yaw)};
+  Vec3 right = angles_right(yaw);
+  float f = move.x * fwd.x + move.z * fwd.z;
+  float r = move.x * right.x + move.z * right.z;
+  uint16_t b = 0;
+  if (f > 0.35f) b |= BTN_FORWARD;
+  if (f < -0.35f) b |= BTN_BACK;
+  if (r > 0.35f) b |= BTN_RIGHT;
+  if (r < -0.35f) b |= BTN_LEFT;
+  return b;
+}
+
+PlayerInput think_simple(AgentMemory& m, float dt) {
+  m.clock += dt;
+  PlayerInput in{};
+  in.buttons = BTN_FORWARD | BTN_FIRE;
+  if (static_cast<int>(m.clock) % 4 == 0) in.buttons |= BTN_JUMP;
+  if (static_cast<int>(m.clock) % 7 == 0) in.buttons |= BTN_DASH;
+  in.weapon_switch = static_cast<int>(m.clock) % 5 == 0 ? 2 : 1;
+  in.yaw = std::sin(m.clock * 0.7f) * PI;
+  in.pitch = 0.0f;
+  return in;
+}
+
+}  // namespace
+
+AgentConfig agent_config_demon() {
+  AgentConfig c;
+  c.turn_rate = 9.0f;
+  c.reaction = 0.10f;
+  c.aim_error = 0.010f;
+  c.fire_cone = 0.06f;
+  c.strafe_min = 0.35f;
+  c.strafe_max = 0.95f;
+  c.seek_health_below = 0.45f;
+  return c;
+}
+
+AgentConfig agent_config_demon_handicapped(float handicap) {
+  handicap = clampf(handicap, 0.0f, 1.0f);
+  AgentConfig c = agent_config_demon();
+  c.turn_rate = lerp(c.turn_rate, 1.6f, handicap);
+  c.reaction = lerp(c.reaction, 0.55f, handicap);
+  c.aim_error = lerp(c.aim_error, 0.090f, handicap);
+  c.fire_cone = lerp(c.fire_cone, 0.16f, handicap);
+  return c;
+}
+
+void agent_reset(AgentMemory& m) {
+  m = AgentMemory{};
+  m.target = -1;
+  m.strafe_sign = 1.0f;
+}
+
+PlayerInput agent_think(const GameState& s, const Map& map, int self, AgentKind kind,
+                        const AgentConfig& cfg, AgentMemory& mem, Rng& rng, float dt) {
+  if (kind == AGENT_SIMPLE) return think_simple(mem, dt);
+
+  PlayerInput in{};
+  const Player& me = s.players[self];
+  if (!me.active || !me.alive) {
+    // Dead: hold still so the respawn does not inherit a wall-hugging heading.
+    agent_reset(mem);
+    in.yaw = me.yaw;
+    in.weapon_switch = 1;
+    return in;
+  }
+
+  mem.clock += dt;
+  Vec3 eye = player_eye_pos(me);
+
+  // ---- pick a target ------------------------------------------------------
+  // Visible enemies only, preferring the close and the wounded, with a bias
+  // toward whoever is already being fought so the bot does not dither between
+  // two equidistant targets and shoot neither.
+  int best = -1;
+  float best_score = -1e30f;
+  for (int i = 0; i < MAX_PLAYERS; ++i) {
+    if (i == self) continue;
+    const Player& e = s.players[i];
+    if (!e.active || !e.alive) continue;
+    Vec3 c = body_center(e);
+    if (!can_see(s, map, self, c)) continue;
+    float dist = vec3_length(c - eye);
+    float score = 100.0f / (dist + 4.0f) + (1.0f - e.health / PLAYER_MAX_HEALTH) * 12.0f;
+    if (i == mem.target) score += 14.0f;
+    if (score > best_score) {
+      best_score = score;
+      best = i;
+    }
+  }
+
+  // With nobody in sight, head for the nearest living enemy. This is the one
+  // place the bot uses knowledge it has not earned: on a 167 x 140 m map like
+  // de_dust2, random wandering means two bots simply never meet - 30 out of 30
+  // matches timed out as draws before this. Note it only navigates on this;
+  // aiming and firing still require real line of sight.
+  int hunt = -1;
+  if (best < 0) {
+    float nearest = 1e30f;
+    for (int i = 0; i < MAX_PLAYERS; ++i) {
+      if (i == self) continue;
+      const Player& e = s.players[i];
+      if (!e.active || !e.alive) continue;
+      float d = vec3_length(e.pos - me.pos);
+      if (d < nearest) {
+        nearest = d;
+        hunt = i;
+      }
+    }
+  }
+
+  if (best >= 0) {
+    if (best != mem.target) {
+      mem.target = best;
+      mem.target_lock = 0.0f;
+      mem.seen_for = 0.0f;
+    }
+    mem.target_lock += dt;
+    mem.seen_for += dt;
+    mem.lost_for = 0.0f;
+    mem.last_known = body_center(s.players[best]);
+    mem.has_last_known = true;
+  } else {
+    mem.seen_for = 0.0f;
+    mem.lost_for += dt;
+    // Chase a lost target for a moment, then give up on it.
+    if (mem.lost_for > 3.0f) {
+      mem.target = -1;
+      mem.has_last_known = false;
+    }
+  }
+
+  // ---- health ------------------------------------------------------------
+  float max_hp = player_class_max_health(me.player_class);
+  bool hurt = me.health < max_hp * cfg.seek_health_below;
+  int pickup = -1;
+  float pickup_dist = 1e30f;
+  if (hurt) {
+    for (int i = 0; i < s.pickup_count; ++i) {
+      if (!s.pickups[i].present) continue;
+      float d = vec3_length(s.pickups[i].pos - me.pos);
+      if (d < pickup_dist) {
+        pickup_dist = d;
+        pickup = i;
+      }
+    }
+  }
+
+  // ---- aim ---------------------------------------------------------------
+  Vec3 aim_point;
+  bool engaging = best >= 0;
+  if (engaging) {
+    const Player& t = s.players[best];
+    aim_point = body_center(t);
+    float dist = vec3_length(aim_point - eye);
+    // A rocket travels, so it has to be thrown where the target will be. A
+    // hitscan shot does not, and leading one is simply a miss.
+    if (me.weapon == WEAPON_ROCKET) {
+      float flight = dist / ROCKET_SPEED;
+      aim_point += Vec3{t.vel.x, t.vel.y * 0.5f, t.vel.z} * flight;
+    }
+  } else if (mem.has_last_known) {
+    aim_point = mem.last_known;
+  } else if (hunt >= 0) {
+    aim_point = body_center(s.players[hunt]);
+  } else {
+    mem.wander_timer -= dt;
+    if (mem.wander_timer <= 0.0f) {
+      mem.wander_yaw = rng_float(rng, -PI, PI);
+      mem.wander_timer = rng_float(rng, 1.2f, 2.8f);
+    }
+    aim_point = me.pos + Vec3{std::sin(mem.wander_yaw), 0.0f, -std::cos(mem.wander_yaw)} * 10.0f;
+    aim_point.y = eye.y;
+  }
+  if (pickup >= 0 && !engaging) aim_point = s.pickups[pickup].pos + Vec3{0.0f, 1.0f, 0.0f};
+
+  aim_at(mem, eye, aim_point, cfg.turn_rate, dt);
+  in.yaw = angle_wrap(mem.aim_yaw + rng_float(rng, -cfg.aim_error, cfg.aim_error));
+  in.pitch = clampf(mem.aim_pitch + rng_float(rng, -cfg.aim_error, cfg.aim_error), -1.5f, 1.5f);
+
+  // ---- weapon ------------------------------------------------------------
+  // Rockets at middling range against something on the ground, where splash
+  // lands even on a near miss. Never up close: ROCKET_SPLASH_RADIUS would take
+  // a large bite out of the bot itself.
+  uint8_t want_weapon = 1;
+  if (engaging) {
+    const Player& t = s.players[best];
+    float dist = vec3_length(body_center(t) - eye);
+    if (dist > 8.0f && dist < 32.0f && t.on_ground && me.player_class != CLASS_SCOUT) {
+      want_weapon = 2;
+    }
+  }
+  in.weapon_switch = want_weapon;
+
+  // ---- fire --------------------------------------------------------------
+  if (engaging && mem.seen_for >= cfg.reaction) {
+    const Player& t = s.players[best];
+    Vec3 want = vec3_normalize(aim_point - eye);
+    Vec3 have = angles_forward(in.yaw, in.pitch);
+    float cone = std::acos(clampf(vec3_dot(want, have), -1.0f, 1.0f));
+    float dist = vec3_length(body_center(t) - eye);
+    bool in_range = dist <= weapon_reach(me.weapon);
+    // Do not splash yourself.
+    bool rocket_safe = me.weapon != WEAPON_ROCKET || dist > ROCKET_SPLASH_RADIUS * 1.8f;
+    if (cone <= cfg.fire_cone && in_range && rocket_safe) in.buttons |= BTN_FIRE;
+  }
+
+  // ---- movement ----------------------------------------------------------
+  Vec3 move{0.0f, 0.0f, 0.0f};
+  if (pickup >= 0 && (!engaging || pickup_dist < 12.0f)) {
+    move = s.pickups[pickup].pos - me.pos;
+    move.y = 0.0f;
+  } else if (engaging) {
+    const Player& t = s.players[best];
+    Vec3 to = t.pos - me.pos;
+    to.y = 0.0f;
+    float dist = vec3_length(to);
+    Vec3 toward = dist > 0.001f ? to / dist : Vec3{0.0f, 0.0f, 0.0f};
+    float want = preferred_range(me.weapon);
+    // Close, back off, or hold - then circle. Circling is most of what makes a
+    // bot hard to hit; standing still and trading is what makes one easy.
+    float radial = clampf((dist - want) / 6.0f, -1.0f, 1.0f);
+    Vec3 side{-toward.z, 0.0f, toward.x};
+    mem.strafe_timer -= dt;
+    if (mem.strafe_timer <= 0.0f) {
+      mem.strafe_sign = -mem.strafe_sign;
+      mem.strafe_timer = rng_float(rng, cfg.strafe_min, cfg.strafe_max);
+    }
+    move = toward * radial + side * (mem.strafe_sign * 0.9f);
+  } else if (mem.has_last_known) {
+    move = mem.last_known - me.pos;
+    move.y = 0.0f;
+  } else if (hunt >= 0) {
+    move = s.players[hunt].pos - me.pos;
+    move.y = 0.0f;
+  } else {
+    move = Vec3{std::sin(mem.wander_yaw), 0.0f, -std::cos(mem.wander_yaw)};
+  }
+
+  // Resolve the heading against the level: nearest open direction that still
+  // has floor under it. Without this the bot walks into de_dust2's walls and
+  // stays there, which cost 30 out of 30 matches as timeouts.
+  if (vec3_length(move) > 0.001f) {
+    Vec3 chosen = steer(map, me.pos, me.vel, move, mem.strafe_sign >= 0.0f ? 1.0f : -1.0f);
+    if (vec3_length(chosen) < 0.001f) {
+      // Boxed in on every heading tried - flip the circling direction so the
+      // next tick fans out the other way instead of retrying the same arc.
+      mem.strafe_sign = -mem.strafe_sign;
+      move = {0.0f, 0.0f, 0.0f};
+    } else {
+      move = chosen;
+    }
+  }
+  in.buttons |= move_buttons(move, in.yaw);
+
+  // ---- jumps and dashes ---------------------------------------------------
+  // Bunny hopping: jumping the moment it lands keeps the speed the ground
+  // friction would otherwise scrub off, so a moving bot stays moving.
+  mem.jump_timer -= dt;
+  float speed = std::sqrt(me.vel.x * me.vel.x + me.vel.z * me.vel.z);
+  if (me.on_ground && (in.buttons & (BTN_FORWARD | BTN_BACK | BTN_LEFT | BTN_RIGHT)) &&
+      speed > GROUND_MAX_SPEED * 0.55f && mem.jump_timer <= 0.0f) {
+    in.buttons |= BTN_JUMP;
+    mem.jump_timer = 0.06f;
+  }
+  // Dash to break a firing line or to close one, never while standing still.
+  if (engaging && me.stamina > 0 && speed > 2.0f) {
+    float dist = vec3_length(s.players[best].pos - me.pos);
+    bool want_dash = (dist > preferred_range(me.weapon) * 1.8f) || (me.health < max_hp * 0.35f);
+    if (want_dash && rng_float(rng, 0.0f, 1.0f) < 0.02f) in.buttons |= BTN_DASH;
+  }
+
+  return in;
+}
